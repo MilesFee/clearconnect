@@ -626,7 +626,20 @@ function handleWithdrawSelected() {
 
     // Show withdrawal log and pause button
     if (els.liveWithdrawalLog) els.liveWithdrawalLog.style.display = 'block';
-    if (els.withdrawalLogList) els.withdrawalLogList.innerHTML = '';
+    resetWithdrawalQueue();
+
+    // Pre-populate queue with all people to be withdrawn (marked as pending)
+    const selectedGroups = foundScanResults.filter(g => selectedScanHashes.has(g.id));
+    selectedGroups.forEach(group => {
+        (group.people || []).forEach(person => {
+            updateWithdrawalQueue({
+                name: person.name,
+                age: person.age,
+                status: 'pending'
+            });
+        });
+    });
+
     if (els.pauseBtn) {
         els.pauseBtn.style.display = 'block';
         els.pauseBtn.textContent = 'Pause';
@@ -1612,7 +1625,7 @@ function handleMessage(message) {
                                 </div>
                             </div>
                             <div class="scan-details" style="display:none;">
-                                <div class="scan-full-message">${item.fullMessage}</div>
+                                <div class="scan-full-message">${item.fullMessage || item.message}</div>
                                 
                                 <div class="scan-people-section">
                                     <div class="people-toggle" data-action="toggle-people" style="margin-top:8px; cursor:pointer; color:var(--brand-primary); font-size:12px; font-weight:600;">
@@ -1743,6 +1756,29 @@ function handleMessage(message) {
         // (Don't navigate to completed view)
         updateFooterStatus();
 
+        // Fade out step 1 (scrolling progress)
+        if (els.stepScroll) {
+            els.stepScroll.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+            els.stepScroll.style.opacity = '0';
+            els.stepScroll.style.transform = 'translateY(-20px)';
+            setTimeout(() => {
+                els.stepScroll.style.display = 'none';
+            }, 500);
+        }
+
+        // Color the withdrawal progress bar based on status
+        const isSafetyStopped = stats.message && stats.message.toLowerCase().includes('safety');
+        let statusColor = 'var(--success)'; // Default green
+        if (isStopped && !isSafetyStopped) {
+            statusColor = 'var(--danger)'; // Red for user stop
+        } else if (isSafetyStopped) {
+            statusColor = 'var(--warning)'; // Orange for safety stop
+        }
+
+        if (els.progressFill) {
+            els.progressFill.style.backgroundColor = statusColor;
+        }
+
         // Get inline stats elements
         const inlineStats = document.getElementById('inline-stats');
         const inlineStatCleared = document.getElementById('inline-stat-cleared');
@@ -1756,16 +1792,26 @@ function handleMessage(message) {
         // Populate stats
         if (inlineStatCleared) inlineStatCleared.textContent = stats.cleared || 0;
         if (inlineStatRemaining) inlineStatRemaining.textContent = stats.remaining || '-';
-        const capacity = stats.remaining ? Math.max(0, 30000 - stats.remaining) : '-';
+        const capacity = stats.remaining ? Math.max(0, 1200 - stats.remaining) : '-';
         if (inlineStatCapacity) inlineStatCapacity.textContent = capacity;
 
-        // Update health bar
+        // Update health bar with color coding
         if (inlineHealthFill && stats.remaining) {
-            const pct = Math.min(100, (stats.remaining / 30000) * 100);
+            const pct = Math.min(100, (stats.remaining / 1200) * 100);
             inlineHealthFill.style.width = pct + '%';
+
+            // Color based on capacity used (remaining = how many pending)
+            // Red if > 90%, yellow if > 70%, green otherwise
+            if (pct > 90) {
+                inlineHealthFill.style.backgroundColor = 'var(--danger)';
+            } else if (pct > 70) {
+                inlineHealthFill.style.backgroundColor = 'var(--warning)';
+            } else {
+                inlineHealthFill.style.backgroundColor = 'var(--success)';
+            }
         }
         if (inlineHealthText && stats.remaining) {
-            inlineHealthText.textContent = `${stats.remaining} / ~30,000`;
+            inlineHealthText.textContent = `${stats.remaining} / ~1,200`;
         }
 
         // Hide action buttons, show inline stats with animation

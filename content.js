@@ -1030,13 +1030,24 @@ async function withdrawSelected(selectedHashes) {
             const age = getAge(btn);
             const ageText = age ? age.text : '';
 
+            // Wait if paused
+            while (isPaused && isRunning) {
+                await wait(500);
+            }
+            if (!isRunning) break;
+
             highlightConnection(btn, 'processing');
 
             // Highlight Withdraw Button
             const withdrawSpan = btn.querySelector('span');
             if (withdrawSpan) withdrawSpan.classList.add('cc-highlight-withdraw');
 
-            updateStatus(`[${processed + 1}/${totalToWithdraw}] ${personName}`, Math.round((processed / totalToWithdraw) * 100));
+            // Send 'active' status for queue update
+            updateStatus(`[${processed + 1}/${totalToWithdraw}] ${personName}`, Math.round((processed / totalToWithdraw) * 100), {
+                name: personName,
+                age: ageText,
+                status: 'active'
+            });
 
             await wait(300); // Visual delay
 
@@ -1050,7 +1061,12 @@ async function withdrawSelected(selectedHashes) {
                 const projectName = msg.length > 60 ? msg.substring(0, 60) + '...' : msg;
                 await recordWithdrawal(personName, profileUrl, ageText, projectName);
 
-                updateStatus(`[${processed}/${totalToWithdraw}] Cleared ${personName}`, Math.round((processed / totalToWithdraw) * 100));
+                // Send 'completed' status for queue update
+                updateStatus(`[${processed}/${totalToWithdraw}] Cleared ${personName}`, Math.round((processed / totalToWithdraw) * 100), {
+                    name: personName,
+                    age: ageText,
+                    status: 'completed'
+                });
 
                 // Remove highlight? Element might be gone/detached
             }
