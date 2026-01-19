@@ -28,6 +28,12 @@
                         d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                 </svg>
             </button>
+            <button id="history-btn" class="icon-btn" title="Withdrawal History">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="1 4 1 10 7 10" />
+                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                </svg>
+            </button>
             <button id="stats-btn" class="icon-btn" title="Last Run Stats">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M18 20V10" />
@@ -63,6 +69,7 @@
             <div class="mode-toggle">
                 <button id="mode-count" class="mode-btn active">By Count</button>
                 <button id="mode-age" class="mode-btn">By Age</button>
+                <button id="mode-message" class="mode-btn">By Message</button>
             </div>
 
             <!-- By Count Input -->
@@ -88,6 +95,20 @@
                 </div>
             </div>
 
+            <!-- By Message Input -->
+            <div id="message-input" class="input-section" style="display:none;">
+                <p class="mode-desc-small">
+                    Scans all connections to auto-discover message groups. You can select which groups to withdraw.
+                </p>
+                <button id="scan-btn" class="primary-btn scan-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    Start Scan
+                </button>
+            </div>
+
             <!-- Mode Description -->
             <p id="mode-desc" class="mode-desc">Withdraws the 10 oldest pending connections.</p>
 
@@ -100,47 +121,150 @@
             </div>
         </div>
 
+        <!-- Scan Results View -->
+        <div id="scan-results-view" class="view" style="display:none;">
+            <h2 class="section-title">Scan Results</h2>
+            <p class="scan-desc">Select message groups to withdraw.</p>
+
+            <div id="scan-results-list" class="scan-results-list">
+                <!-- Populated dynamically -->
+            </div>
+
+            <div class="empty-scan" id="empty-scan" style="display:none;">
+                <p>No message patterns found.</p>
+                <button id="scan-again-btn" class="link-btn">Scan Again</button>
+            </div>
+
+            <div class="scan-actions">
+                <button id="withdraw-selected-btn" class="primary-btn" disabled>Withdraw Selected (<span
+                        id="selected-count">12</span>)</button>
+                <button id="cancel-scan-btn" class="secondary-btn">Cancel</button>
+            </div>
+        </div>
+
         <!-- Progress View -->
         <div id="progress-view" class="view" style="display:none;">
             <h2 id="active-operation-title" class="section-title">Clearing connections...</h2>
-            <!-- Scroll Step -->
-            <div id="step-scroll" class="progress-step active">
-                <div class="step-header">
-                    <svg id="step-scroll-check" class="step-check" width="16" height="16" viewBox="0 0 24 24"
-                        fill="none" stroke="currentColor" stroke-width="3" style="display:none;">
-                        <path d="M20 6L9 17l-5-5" />
-                    </svg>
-                    <span id="step-scroll-num" class="step-num">1</span>
-                    <span class="step-label wave-text">Scrolling to bottom</span>
-                </div>
-                <div class="step-content">
-                    <div class="progress-bar-bg">
-                        <div id="scroll-progress-fill" class="progress-bar-fill"></div>
+
+            <!-- COUNT / AGE PROGRESS LAYOUT -->
+            <div id="progress-layout-standard">
+                <!-- Load/Scroll Step -->
+                <div id="step-scroll" class="progress-step active">
+                    <div class="step-header">
+                        <svg id="step-scroll-check" class="step-check" width="16" height="16" viewBox="0 0 24 24"
+                            fill="none" stroke="currentColor" stroke-width="3" style="display:none;">
+                            <path d="M20 6L9 17l-5-5" />
+                        </svg>
+                        <span id="step-scroll-num" class="step-num">1</span>
+                        <span class="step-label wave-text">Discovery Progress</span>
                     </div>
-                    <p id="scroll-status" class="status-text">Starting...</p>
+                    <div class="step-content">
+                        <div class="progress-bar-bg">
+                            <div id="scroll-progress-fill" class="progress-bar-fill"></div>
+                        </div>
+                        <p id="scroll-status" class="status-text">Starting...</p>
+                    </div>
+                </div>
+
+                <!-- Withdraw Step -->
+                <div id="step-withdraw" class="progress-step">
+                    <div class="step-header">
+                        <svg id="step-withdraw-check" class="step-check" width="16" height="16" viewBox="0 0 24 24"
+                            fill="none" stroke="currentColor" stroke-width="3" style="display:none;">
+                            <path d="M20 6L9 17l-5-5" />
+                        </svg>
+                        <span id="step-withdraw-num" class="step-num">2</span>
+                        <span class="step-label">Withdrawal Progress</span>
+                    </div>
+                    <div class="step-content">
+                        <div class="progress-bar-bg">
+                            <div id="progress-fill" class="progress-bar-fill"></div>
+                        </div>
+                        <p id="status-text" class="status-text">Waiting...</p>
+                    </div>
                 </div>
             </div>
 
-            <!-- Withdraw Step -->
-            <div id="step-withdraw" class="progress-step">
-                <div class="step-header">
-                    <svg id="step-withdraw-check" class="step-check" width="16" height="16" viewBox="0 0 24 24"
-                        fill="none" stroke="currentColor" stroke-width="3" style="display:none;">
-                        <path d="M20 6L9 17l-5-5" />
-                    </svg>
-                    <span id="step-withdraw-num" class="step-num">2</span>
-                    <span class="step-label">Withdrawing connections</span>
-                </div>
-                <div class="step-content">
+            <!-- MESSAGE MODE PROGRESS LAYOUT -->
+            <div id="progress-layout-message" style="display:none;">
+                <!-- Scanning State -->
+                <div id="msg-step-scan" class="progress-step active">
+                    <h3 class="pulsating-text">Scanning...</h3>
                     <div class="progress-bar-bg">
-                        <div id="progress-fill" class="progress-bar-fill"></div>
+                        <div id="msg-scan-fill" class="progress-bar-fill"></div>
                     </div>
-                    <p id="status-text" class="status-text">Waiting...</p>
+                    <p id="msg-scan-status" class="status-text">Found 0 unique messages.</p>
+                </div>
+
+                <!-- Withdrawing State -->
+                <div id="msg-step-withdraw" class="progress-step" style="display:none;">
+                    <h3>Withdrawing...</h3>
+                    <div class="progress-bar-bg">
+                        <div id="msg-withdraw-fill" class="progress-bar-fill"></div>
+                    </div>
+                    <p id="msg-withdraw-status" class="status-text">Preparing...</p>
                 </div>
             </div>
 
-            <!-- Stop Button (hidden when complete) -->
-            <button id="stop-btn" class="secondary-btn">Stop</button>
+            <!-- Withdrawal Queue (shows who will be/is being withdrawn) -->
+            <div id="live-withdrawal-log" class="live-results-section" style="display:none;">
+                <h3 class="live-results-header">Removal Queue:</h3>
+                <div id="withdrawal-log-list" class="withdrawal-queue" style="max-height: 200px; overflow-y: auto;">
+                    <!-- Populated dynamically with queue items -->
+                </div>
+            </div>
+
+            <!-- Live Scan Results (visible during scanning) -->
+            <div id="live-scan-results" class="live-results-section" style="display:none;">
+                <h3 class="live-results-header">Found Groups:</h3>
+                <div id="live-results-list" class="live-results-list"></div>
+            </div>
+
+            <!-- Matches List (for message mode - scrollable, collapsible) -->
+            <div id="matches-list-section" class="matches-list-section" style="display:none;">
+                <div class="matches-header">
+                    <span class="matches-label">Matching connections</span>
+                    <button id="matches-toggle" type="button" class="matches-toggle" title="Toggle list">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polyline points="6 9 12 15 18 9" />
+                        </svg>
+                    </button>
+                </div>
+                <div id="matches-list-wrapper" class="matches-list-wrapper">
+                    <table id="matches-table" class="matches-table">
+                        <tbody id="matches-list"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Message Edit Section (for message mode, hidden by default) -->
+            <div id="message-edit-section" class="message-edit-section" style="display:none;">
+                <textarea id="edit-message-1" class="message-textarea" placeholder="Message pattern 1..."
+                    maxlength="300"></textarea>
+                <textarea id="edit-message-2" class="message-textarea" placeholder="Message pattern 2 (optional)..."
+                    maxlength="300"></textarea>
+                <textarea id="edit-message-3" class="message-textarea" placeholder="Message pattern 3 (optional)..."
+                    maxlength="300"></textarea>
+                <button id="apply-messages-btn" type="button" class="primary-btn small">Apply & Search</button>
+            </div>
+
+            <!-- Edit Messages Link (shown when edit section hidden) -->
+            <a href="#" id="edit-messages-link" class="edit-link" style="display:none;">Edit messages to clear</a>
+
+            <!-- People Queue List (shows who will be/was withdrawn) -->
+            <div id="people-queue-section" class="live-results-section" style="display:none;">
+                <h3 class="live-results-header">Queued for Removal:</h3>
+                <div id="people-queue-list" class="live-results-list" style="max-height: 200px;">
+                    <!-- Populated dynamically with checkmarks as items complete -->
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="progress-actions">
+                <button id="pause-btn" class="secondary-btn" style="display:none;">Pause</button>
+                <button id="stop-btn" class="secondary-btn">Stop</button>
+            </div>
 
             <!-- Inline Stats (hidden initially, fades in on complete) -->
             <div id="inline-stats" class="inline-stats" style="display:none;">
@@ -235,34 +359,53 @@
                 </div>
             </div>
 
+            <!-- Cleared Connections List -->
+            <div id="cleared-list-section" class="live-results-section" style="display:none;">
+                <h3 class="live-results-header">Just Cleared:</h3>
+                <div id="cleared-list" class="live-results-list" style="max-height: 150px;">
+                    <!-- Populated dynamically -->
+                </div>
+            </div>
+
             <!-- Continue Clearing Options -->
             <div class="continue-section">
                 <p class="continue-label">Continue clearing?</p>
 
-                <div class="continue-option" id="option-count">
-                    <label>
-                        <input type="radio" name="continue-mode" value="count" checked>
-                        Clear <input type="number" id="continue-count" value="10" min="1" max="500"
-                            class="inline-input"> more
-                    </label>
+                <!-- STANDARD POST-WITHDRAW (Count / Age) -->
+                <div id="post-withdraw-standard">
+                    <div class="continue-option" id="option-count">
+                        <label>
+                            <input type="radio" name="continue-mode" value="count" checked>
+                            Clear <input type="number" id="continue-count" value="10" min="1" max="500"
+                                class="inline-input"> more
+                        </label>
+                    </div>
+
+                    <div class="continue-option" id="option-age">
+                        <label>
+                            <input type="radio" name="continue-mode" value="age">
+                            Clear connections sent
+                            <div class="input-row full-width inline-age-row">
+                                <input type="number" id="continue-age-value" value="3" min="1" max="365"
+                                    class="inline-input">
+                                <select id="continue-age-unit" class="inline-select">
+                                    <option value="day">days</option>
+                                    <option value="week">weeks</option>
+                                    <option value="month" selected>months</option>
+                                    <option value="year">years</option>
+                                </select>
+                                <span class="suffix">ago +</span>
+                            </div>
+                        </label>
+                    </div>
                 </div>
 
-                <div class="continue-option" id="option-age">
-                    <label>
-                        <input type="radio" name="continue-mode" value="age">
-                        Clear connections sent
-                        <div class="input-row full-width inline-age-row">
-                            <input type="number" id="continue-age-value" value="3" min="1" max="365"
-                                class="inline-input">
-                            <select id="continue-age-unit" class="inline-select">
-                                <option value="day">days</option>
-                                <option value="week">weeks</option>
-                                <option value="month" selected>months</option>
-                                <option value="year">years</option>
-                            </select>
-                            <span class="suffix">ago +</span>
-                        </div>
-                    </label>
+                <!-- MESSAGE POST-WITHDRAW -->
+                <div id="post-withdraw-message" style="display:none;">
+                    <p class="mode-desc-small">Select remaining groups to clear:</p>
+                    <div id="remaining-scan-list" class="scan-results-list" style="max-height: 150px;">
+                        <!-- Populated dynamically -->
+                    </div>
                 </div>
 
                 <div class="continue-actions">
@@ -329,27 +472,22 @@
                 </div>
             </div>
 
-            <button id="toggle-advanced" class="link-btn">Show Advanced Settings</button>
-
-            <div id="advanced-settings" style="display:none;">
-                <div class="setting-group">
-                    <label>Withdraw Button Selector</label>
-                    <p class="setting-desc">CSS selector to find withdraw buttons. Update if LinkedIn changes their UI.
-                    </p>
-                    <input type="text" id="selector-withdraw" class="code-input">
-                </div>
-                <div class="setting-group">
-                    <label>Confirm Button Selector</label>
-                    <p class="setting-desc">CSS selector for the confirmation dialog button.</p>
-                    <input type="text" id="selector-confirm" class="code-input">
-                </div>
-                <button id="reset-defaults" class="link-btn danger">Reset to Defaults</button>
-            </div>
+            <!-- Advanced Setting Removed -->
 
             <div class="btn-row">
                 <button id="save-settings" class="primary-btn">Save</button>
                 <button id="back-btn" class="secondary-btn">Back</button>
             </div>
+        </div>
+
+        <!-- History View -->
+        <div id="history-view" class="view" style="display:none;">
+            <h2 class="section-title">Withdrawal History</h2>
+            <div id="history-content" class="history-content">
+                <p class="empty-history" id="empty-history">No withdrawals recorded yet.</p>
+                <div id="history-sessions"></div>
+            </div>
+            <button id="history-back-btn" class="secondary-btn">Back</button>
         </div>
 
         <!-- Footer -->
