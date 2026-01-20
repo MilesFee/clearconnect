@@ -11,7 +11,8 @@ const DEFAULTS = {
     currentMode: 'count',
     safeMode: true,
     theme: 'light',
-    alltimeCleared: 0
+    alltimeCleared: 0,
+    debugMode: false
 };
 
 const ICONS = {
@@ -27,6 +28,8 @@ let currentMode = 'count';
 let stats = { cleared: 0, oldest: '-', remaining: 0, timestamp: null };
 let activeTabId = null;
 let isOperationRunning = false;
+let isCancellingOperation = false; // Flag to prevent completion UI during scan cancel
+let hideScrollTimeout = null; // Track setTimeout ID for stepScroll hide animation
 let operationStatus = ''; // 'scrolling', 'withdrawing', or ''
 
 // DOM Elements
@@ -323,7 +326,17 @@ function showView(view) {
     switch (view) {
         case 'wrongPage': if (els.wrongPageView) els.wrongPageView.style.display = 'block'; break;
         case 'main': if (els.mainView) els.mainView.style.display = 'block'; break;
-        case 'progress': if (els.progressView) els.progressView.style.display = 'block'; break;
+        case 'progress':
+            if (els.progressView) els.progressView.style.display = 'block';
+            // Set correct layout based on current mode
+            if (currentMode === 'message') {
+                if (els.progressLayoutStandard) els.progressLayoutStandard.style.display = 'none';
+                if (els.progressLayoutMessage) els.progressLayoutMessage.style.display = 'block';
+            } else {
+                if (els.progressLayoutStandard) els.progressLayoutStandard.style.display = 'block';
+                if (els.progressLayoutMessage) els.progressLayoutMessage.style.display = 'none';
+            }
+            break;
         case 'completed': if (els.completedView) els.completedView.style.display = 'block'; break;
         case 'settings': if (els.settingsView) els.settingsView.style.display = 'block'; break;
         case 'history': if (historyView) historyView.style.display = 'block'; break;
@@ -353,6 +366,10 @@ async function startScan() {
         return;
     }
 
+    // Check page validity first
+    const pageOk = await checkPage();
+    if (!pageOk) return;
+
     // Clear any saved results when starting new
     chrome.storage.local.remove('savedScanResults');
 
@@ -378,8 +395,12 @@ async function startScan() {
     }
 
     // Hide withdrawal-related elements during scan
-    if (els.liveWithdrawalLog) els.liveWithdrawalLog.style.display = 'none';
-    if (els.withdrawalLogList) els.withdrawalLogList.innerHTML = '';
+    const matchesSection = document.getElementById('matches-list-section');
+    if (matchesSection) matchesSection.style.display = 'none';
+
+    const matchesList = document.getElementById('matches-list');
+    if (matchesList) matchesList.innerHTML = '';
+
     if (els.pauseBtn) els.pauseBtn.style.display = 'none';
     if (els.stopBtn) els.stopBtn.style.display = 'block';
 
@@ -389,10 +410,8 @@ async function startScan() {
     chrome.storage.local.set({ runningMode: 'message' });
     updateFooterStatus();
 
-    // Send Scan command
-    chrome.tabs.sendMessage(activeTabId, { action: 'SCAN_CONNECTIONS' }, (res) => {
-        if (chrome.runtime.lastError) console.error(chrome.runtime.lastError);
-    });
+    // Send Scan command (no callback needed - content script doesn't send response)
+    chrome.tabs.sendMessage(activeTabId, { action: 'SCAN_CONNECTIONS' });
 }
 
 function handleScanComplete(message) {
@@ -438,48 +457,111 @@ function renderScanResults(results) {
         const div = document.createElement('div');
         div.className = 'scan-result-item';
 
-        // Build people list HTML
-        const peopleListHtml = (item.people || []).map(p =>
-            `<div class="person-row">
-                <span class="person-name" data-id="${p.id}">${p.name}</span>
-                <span class="person-age">${p.age}</span>
-            </div>`
-        ).join('');
+        // Header
+        const header = document.createElement('div');
+        header.className = 'scan-result-header';
 
-        div.innerHTML = `
-            <div class="scan-result-header">
-                <div class="scan-checkbox-wrapper">
-                    <input type="checkbox" class="scan-checkbox" data-hash="${item.id}">
-                </div>
-                <div class="scan-info" title="Click to expand/collapse">
-                    <div class="scan-topic">${topic}</div>
-                    <div class="scan-preview">${shortMsg}</div>
-                </div>
-                <div class="scan-meta">
-                    <span class="scan-count-badge">${item.count}</span>
-                </div>
-            </div>
-            <div class="scan-details" style="display:none;">
-                <div class="scan-detail-row"><strong>Age Range:</strong> ${ageRange}</div>
-                <div class="scan-full-message">${item.fullMessage}</div>
-                
-                <div class="scan-people-section">
-                    <div class="people-toggle" style="margin-top:8px; cursor:pointer; color:var(--brand-primary); font-size:12px; font-weight:600;">
-                        Show ${item.people ? item.people.length : 0} People in Group
-                    </div>
-                    <div class="people-list" style="display:none; margin-top:8px; border-top:1px solid var(--border-default); padding-top:4px;">
-                        ${peopleListHtml}
-                    </div>
-                </div>
-            </div>
-        `;
+        const checkboxWrapper = document.createElement('div');
+        checkboxWrapper.className = 'scan-checkbox-wrapper';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'scan-checkbox';
+        checkbox.dataset.hash = item.id;
+        checkboxWrapper.appendChild(checkbox);
+
+        const info = document.createElement('div');
+        info.className = 'scan-info';
+        info.title = 'Click to expand/collapse';
+
+        const scanTopic = document.createElement('div');
+        scanTopic.className = 'scan-topic';
+        scanTopic.textContent = topic;
+
+        const scanPreview = document.createElement('div');
+        scanPreview.className = 'scan-preview';
+        scanPreview.textContent = shortMsg;
+
+        info.appendChild(scanTopic);
+        info.appendChild(scanPreview);
+
+        const meta = document.createElement('div');
+        meta.className = 'scan-meta';
+        const badge = document.createElement('span');
+        badge.className = 'scan-count-badge';
+        badge.textContent = item.count;
+        meta.appendChild(badge);
+
+        header.appendChild(checkboxWrapper);
+        header.appendChild(info);
+        header.appendChild(meta);
+
+        // Details
+        const details = document.createElement('div');
+        details.className = 'scan-details';
+        details.style.display = 'none';
+
+        const detailRow = document.createElement('div');
+        detailRow.className = 'scan-detail-row';
+        const ageLabel = document.createElement('strong');
+        ageLabel.textContent = 'Age Range: ';
+        detailRow.appendChild(ageLabel);
+        detailRow.appendChild(document.createTextNode(ageRange));
+
+        const fullMessageDiv = document.createElement('div');
+        fullMessageDiv.className = 'scan-full-message';
+        fullMessageDiv.textContent = item.fullMessage;
+
+        const peopleSection = document.createElement('div');
+        peopleSection.className = 'scan-people-section';
+
+        const peopleToggle = document.createElement('div');
+        peopleToggle.className = 'people-toggle';
+        peopleToggle.style.marginTop = '8px';
+        peopleToggle.style.cursor = 'pointer';
+        peopleToggle.style.color = 'var(--brand-primary)';
+        peopleToggle.style.fontSize = '12px';
+        peopleToggle.style.fontWeight = '600';
+        peopleToggle.textContent = `Show ${item.people ? item.people.length : 0} People in Group`;
+
+        const peopleList = document.createElement('div');
+        peopleList.className = 'people-list';
+        peopleList.style.display = 'none';
+        peopleList.style.marginTop = '8px';
+        peopleList.style.borderTop = '1px solid var(--border-default)';
+        peopleList.style.paddingTop = '4px';
+
+        if (item.people) {
+            item.people.forEach(p => {
+                const pRow = document.createElement('div');
+                pRow.className = 'person-row';
+
+                const pName = document.createElement('span');
+                pName.className = 'person-name';
+                pName.dataset.id = p.id;
+                pName.textContent = p.name;
+
+                const pAge = document.createElement('span');
+                pAge.className = 'person-age';
+                pAge.textContent = p.age;
+
+                pRow.appendChild(pName);
+                pRow.appendChild(pAge);
+                peopleList.appendChild(pRow);
+            });
+        }
+
+        peopleSection.appendChild(peopleToggle);
+        peopleSection.appendChild(peopleList);
+
+        details.appendChild(detailRow);
+        details.appendChild(fullMessageDiv);
+        details.appendChild(peopleSection);
+
+        div.appendChild(header);
+        div.appendChild(details);
 
         // Handlers
-        const checkbox = div.querySelector('.scan-checkbox');
-        const details = div.querySelector('.scan-details');
-        const info = div.querySelector('.scan-info');
-        const peopleToggle = div.querySelector('.people-toggle');
-        const peopleList = div.querySelector('.people-list');
+
 
         // Checkbox click
         checkbox.addEventListener('change', (e) => {
@@ -536,71 +618,145 @@ function updateWithdrawButton() {
 }
 
 // Track queue state for focused rendering
-let withdrawalQueue = [];
-let currentQueueIndex = 0;
+const matchesList = document.getElementById('matches-list');
+
+// Save queue state to storage
+function saveWithdrawalQueue() {
+    if (!matchesList) return;
+
+    const queueData = [];
+    const rows = matchesList.querySelectorAll('tr');
+
+    rows.forEach(row => {
+        const name = row.getAttribute('data-name');
+        const status = row.classList.contains('cleared') ? 'completed' :
+            (row.classList.contains('active') ? 'active' : 'pending');
+
+        // Extract Age text from innerHTML (hacky but effective given structure)
+        const ageSpan = row.querySelector('.q-age') || row.querySelector('span'); // Fallback
+        let age = '';
+        if (ageSpan) {
+            age = ageSpan.textContent.replace(/[()]/g, '');
+        }
+
+        queueData.push({ name, age, status });
+    });
+
+    chrome.storage.local.set({ savedWithdrawalQueue: queueData });
+}
+
+// Restore queue from storage
+function restoreWithdrawalQueue() {
+    chrome.storage.local.get(['savedWithdrawalQueue'], (result) => {
+        if (!result.savedWithdrawalQueue || !matchesList) return;
+
+        // Clear current List? Only if we are strictly restoring.
+        matchesList.innerHTML = '';
+        const matchesSection = document.getElementById('matches-list-section');
+        if (matchesSection && result.savedWithdrawalQueue.length > 0) {
+            matchesSection.style.display = 'block';
+            matchesSection.classList.remove('collapsed');
+        }
+
+        result.savedWithdrawalQueue.forEach(item => {
+            // Re-create row
+            const row = document.createElement('tr');
+            row.setAttribute('data-name', item.name);
+
+            if (item.status === 'active') row.classList.add('active');
+            if (item.status === 'completed') row.classList.add('cleared');
+            // pending is default/no-class
+
+            const cellName = document.createElement('td');
+            cellName.innerHTML = `${item.name} <span class="q-age" style="font-size: 11px; color: var(--text-secondary); margin-left: 4px;">(${item.age || ''})</span>`;
+
+            const cellIcon = document.createElement('td');
+            cellIcon.className = 'icon-cell';
+
+            if (item.status === 'completed') {
+                cellIcon.innerHTML = `<svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>`;
+            }
+
+            row.appendChild(cellName);
+            row.appendChild(cellIcon);
+            matchesList.appendChild(row);
+
+            // Auto-scroll if active
+            if (item.status === 'active') { // Wait for render
+                setTimeout(() => row.scrollIntoView({ behavior: 'auto', block: 'center' }), 100);
+            }
+        });
+    });
+}
 
 function updateWithdrawalQueue(clearedData) {
-    if (!els.withdrawalLogList) return;
+    if (!matchesList) return;
+
 
     // clearedData = { name, age, profileUrl, status: 'active' | 'completed' }
     const { name, age, status } = clearedData;
 
-    // Find or create queue item
-    let item = els.withdrawalLogList.querySelector(`[data-name="${name}"]`);
+    // Find row - Prioritize based on status logic to handle duplicates
+    let row;
+    const escapedName = CSS.escape(name);
 
-    if (!item) {
-        // Add new item
-        item = document.createElement('div');
-        item.className = 'queue-item pending';
-        item.setAttribute('data-name', name);
-        item.innerHTML = `
-            <div class="queue-item-info">
-                <span class="queue-item-name">${name}</span>
-                <span class="queue-item-age">${age || ''}</span>
-            </div>
-            <div class="queue-item-status"></div>
-        `;
-        els.withdrawalLogList.appendChild(item);
-        withdrawalQueue.push({ name, age });
+    if (status === 'active') {
+        // Look for a pending row first
+        row = matchesList.querySelector(`tr[data-name="${escapedName}"]:not(.cleared):not(.active)`);
+    } else if (status === 'completed') {
+        // Look for the currently active row
+        row = matchesList.querySelector(`tr[data-name="${escapedName}"].active`);
     }
 
-    // Update status
-    item.classList.remove('pending', 'active', 'completed');
+    // Fallback: Find any non-cleared row, then any row
+    if (!row) row = matchesList.querySelector(`tr[data-name="${escapedName}"]:not(.cleared)`);
+    if (!row) row = matchesList.querySelector(`tr[data-name="${escapedName}"]`);
 
-    if (status === 'completed') {
-        item.classList.add('completed');
-        item.querySelector('.queue-item-status').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>`;
-    } else if (status === 'active') {
-        item.classList.add('active');
-        item.querySelector('.queue-item-status').innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="3"/></svg>`;
+    if (!row) {
+        row = document.createElement('tr');
+        row.setAttribute('data-name', name);
 
-        // Mark previous active as pending if not completed
-        const prevActive = els.withdrawalLogList.querySelector('.queue-item.active:not([data-name="' + name + '"])');
-        if (prevActive && !prevActive.classList.contains('completed')) {
-            prevActive.classList.remove('active');
-            prevActive.classList.add('pending');
+        const cellName = document.createElement('td');
+        // cellName.textContent = name;
+        cellName.innerHTML = `${name} <span style="font-size: 11px; color: var(--text-secondary); margin-left: 4px;">(${age || ''})</span>`;
+
+        const cellIcon = document.createElement('td');
+        cellIcon.className = 'icon-cell';
+
+        row.appendChild(cellName);
+        row.appendChild(cellIcon);
+        matchesList.appendChild(row);
+    }
+
+    // Update status styles
+    if (status === 'active') {
+        const allRows = matchesList.querySelectorAll('tr.active');
+        allRows.forEach(r => r.classList.remove('active'));
+
+        row.classList.remove('cleared');
+        row.classList.add('active');
+
+        // Auto-scroll
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (status === 'completed') {
+        row.classList.remove('active');
+        row.classList.add('cleared');
+
+        const iconCell = row.querySelector('td:last-child');
+        if (iconCell) {
+            iconCell.innerHTML = `<svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>`;
         }
-    } else {
-        item.classList.add('pending');
     }
 
-    // Scroll to keep active item centered
-    if (status === 'active' || status === 'completed') {
-        const itemTop = item.offsetTop;
-        const listHeight = els.withdrawalLogList.clientHeight;
-        const itemHeight = item.offsetHeight;
-        const targetScroll = itemTop - (listHeight / 2) + (itemHeight / 2);
-        els.withdrawalLogList.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' });
-    }
+    saveWithdrawalQueue();
 }
 
 function resetWithdrawalQueue() {
-    withdrawalQueue = [];
-    currentQueueIndex = 0;
-    if (els.withdrawalLogList) els.withdrawalLogList.innerHTML = '';
+    if (matchesList) matchesList.innerHTML = '';
+    chrome.storage.local.remove('savedWithdrawalQueue');
 }
 
-function handleWithdrawSelected() {
+async function handleWithdrawSelected() {
     if (selectedScanHashes.size === 0) return;
 
     // Hide scan results list so user can see progress
@@ -641,8 +797,9 @@ function handleWithdrawSelected() {
     });
 
     if (els.pauseBtn) {
-        els.pauseBtn.style.display = 'block';
-        els.pauseBtn.textContent = 'Pause';
+        els.pauseBtn.style.display = 'flex';
+        const pauseText = els.pauseBtn.querySelector('.btn-text');
+        if (pauseText) pauseText.textContent = 'Pause';
     }
     if (els.stopBtn) els.stopBtn.style.display = 'block';
 
@@ -652,12 +809,19 @@ function handleWithdrawSelected() {
     operationStatus = 'withdrawing';
     updateFooterStatus();
 
-    // Start withdrawal via content script
+    // Get settings including debug mode
+    const settings = await chrome.storage.local.get(DEFAULTS);
+
+    // Start withdrawal via content script (no callback needed - content script doesn't send response)
     const hashes = Array.from(selectedScanHashes);
     if (activeTabId) {
         chrome.tabs.sendMessage(activeTabId, {
             action: 'WITHDRAW_SELECTED',
-            selectedHashes: hashes
+            selectedHashes: hashes,
+            debugMode: settings.debugMode === true,
+            safeMode: settings.safeMode,
+            safeThreshold: settings.safeThreshold,
+            safeUnit: settings.safeUnit
         });
     }
 }
@@ -849,6 +1013,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         safeUnit: document.getElementById('safe-unit'),
         safeThresholdGroup: document.getElementById('safe-threshold-group'),
         safeModeToggle: document.getElementById('safe-mode-toggle'),
+        debugModeToggle: document.getElementById('debug-mode-toggle'),
         themeLight: document.getElementById('theme-light'),
         themeDark: document.getElementById('theme-dark'),
         safeBadge: document.getElementById('safe-badge'),
@@ -942,6 +1107,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (els.safeThreshold) els.safeThreshold.value = saved.safeThreshold;
     if (els.safeUnit) els.safeUnit.value = saved.safeUnit;
     updateSafeModeUI();
+
+    // Apply debug mode
+    if (els.debugModeToggle) els.debugModeToggle.checked = saved.debugMode === true;
 
     // Restore input values
     if (els.withdrawCount) els.withdrawCount.value = saved.withdrawCount;
@@ -1108,6 +1276,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    if (els.debugModeToggle) {
+        els.debugModeToggle.addEventListener('change', () => {
+            chrome.storage.local.set({ debugMode: els.debugModeToggle.checked });
+        });
+    }
+
     if (els.safeThreshold) els.safeThreshold.addEventListener('change', updateSafeModeUI);
     if (els.safeUnit) els.safeUnit.addEventListener('change', updateSafeModeUI);
 
@@ -1227,7 +1401,65 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Initial page check (with error handling)
     try {
-        // Check for saved scan results (Persistence)
+        // ALWAYS check for running operations FIRST
+        const pageOk = await checkPage();
+        if (pageOk) {
+            // Try to get status from content script  
+            try {
+                const response = await Promise.race([
+                    new Promise((resolve) => {
+                        chrome.tabs.sendMessage(activeTabId, { action: 'GET_STATUS' }, (res) => {
+                            if (chrome.runtime.lastError) resolve(null);
+                            else resolve(res);
+                        });
+                    }),
+                    new Promise(resolve => setTimeout(() => resolve(null), 1000))
+                ]);
+
+                if (response && response.isRunning) {
+                    // Operation is running! Show progress view
+                    isOperationRunning = true;
+                    operationStatus = response.subMode || 'scrolling';
+                    currentMode = response.mode || 'count';
+
+                    // Store running mode
+                    chrome.storage.local.set({ runningMode: currentMode });
+
+                    showView('progress');
+
+                    // Set correct layout based on mode
+                    if (currentMode === 'message') {
+                        if (els.progressLayoutStandard) els.progressLayoutStandard.style.display = 'none';
+                        if (els.progressLayoutMessage) els.progressLayoutMessage.style.display = 'block';
+
+                        // Restore queue for withdrawal phase
+                        if (response.subMode === 'withdrawing') {
+                            restoreWithdrawalQueue();
+                            const matchesSection = document.getElementById('matches-list-section');
+                            if (matchesSection) matchesSection.style.display = 'block';
+                        }
+                    } else {
+                        if (els.progressLayoutStandard) els.progressLayoutStandard.style.display = 'block';
+                        if (els.progressLayoutMessage) els.progressLayoutMessage.style.display = 'none';
+
+                        // Restore queue
+                        restoreWithdrawalQueue();
+                        const matchesSection = document.getElementById('matches-list-section');
+                        if (matchesSection) {
+                            matchesSection.style.display = 'block';
+                            matchesSection.classList.remove('collapsed');
+                        }
+                    }
+
+                    updateFooterStatus();
+                    return; // Don't check other states
+                }
+            } catch (e) {
+                console.log('Status check failed:', e);
+            }
+        }
+
+        // No running operation - check for saved scan results (Persistence)
         const scanData = await chrome.storage.local.get(['savedScanResults']);
         if (scanData.savedScanResults && scanData.savedScanResults.length > 0) {
             foundScanResults = scanData.savedScanResults;
@@ -1305,12 +1537,103 @@ async function restoreState() {
     try {
         chrome.tabs.sendMessage(activeTabId, { action: 'GET_STATUS' }, (response) => {
             if (chrome.runtime.lastError || !response) return;
+
             if (response.isRunning) {
                 isOperationRunning = true;
+                currentMode = response.mode || 'count'; // Ensure global mode is synced
                 showView('progress');
                 updateActiveTitle(response.mode, response.ageValue, response.ageUnit, response.count);
-                if (els.progressFill) els.progressFill.style.width = response.progress + '%';
-                if (els.statusText) els.statusText.textContent = response.statusText;
+                console.log('Restoring State:', { mode: response.mode, subMode: response.subMode, status: response.statusText });
+
+                // Handle Layout Visibility - MESSAGE MODE
+                if (response.mode === 'message') {
+                    // Hide standard layout completely
+                    if (els.progressLayoutStandard) els.progressLayoutStandard.style.display = 'none';
+                    if (els.progressLayoutMessage) els.progressLayoutMessage.style.display = 'block';
+
+                    // Show saved queue if any
+                    restoreWithdrawalQueue();
+
+                    // Specific sub-state restoration
+                    if (response.subMode === 'withdrawing') {
+                        if (els.stepWithdraw) {
+                            els.stepWithdraw.classList.add('active');
+                            els.stepWithdraw.classList.remove('completed');
+                        }
+                    }
+                    // 1. Scanning Phase
+                    if (response.subMode === 'scanning') {
+                        if (els.msgStepScan) els.msgStepScan.style.display = 'block';
+                        if (els.msgStepWithdraw) els.msgStepWithdraw.style.display = 'none';
+                        if (els.msgScanFill) els.msgScanFill.style.width = response.progress + '%';
+                        if (els.msgScanStatus) els.msgScanStatus.textContent = response.statusText;
+                    }
+                    // 2. Withdrawal Phase
+                    else if (response.subMode === 'withdrawing') {
+                        if (els.msgStepScan) els.msgStepScan.style.display = 'none';
+                        if (els.msgStepWithdraw) els.msgStepWithdraw.style.display = 'block';
+                        if (els.msgWithdrawFill) els.msgWithdrawFill.style.width = response.progress + '%';
+                        if (els.msgWithdrawStatus) els.msgWithdrawStatus.textContent = response.statusText;
+                    }
+                    // 3. Selection Phase (Implicit: isRunning=false usually, but if we catch it here)
+                    else {
+                        // Fallback to Scan if undefined
+                        if (els.msgStepScan) els.msgStepScan.style.display = 'block';
+                        if (els.msgStepWithdraw) els.msgStepWithdraw.style.display = 'none';
+                        if (els.msgScanFill) els.msgScanFill.style.width = response.progress + '%';
+                        if (els.msgScanStatus) els.msgScanStatus.textContent = response.statusText;
+                    }
+
+                } else {
+                    if (els.progressLayoutStandard) els.progressLayoutStandard.style.display = 'block';
+                    if (els.progressLayoutMessage) els.progressLayoutMessage.style.display = 'none';
+
+                    // Force visibility and set title for Standard Mode (Count/Age)
+                    // This ensures the "Removal Queue" header is visible even while scanning/scrolling
+                    const matchesSection = document.getElementById('matches-list-section');
+                    const matchesLabel = document.getElementById('matches-label');
+                    if (matchesSection) {
+                        matchesSection.style.display = 'block';
+                        matchesSection.classList.remove('collapsed');
+                    }
+                    if (matchesLabel) {
+                        matchesLabel.textContent = 'Removal Queue';
+                        if (matchesLabel.parentElement) matchesLabel.parentElement.setAttribute('data-label', 'Removal Queue');
+                    }
+
+                    // Standard mode - Restore queue
+                    restoreWithdrawalQueue();
+
+                    // Specific sub-state restoration for standard mode (Count/Age)
+                    if (response.subMode === 'withdrawing') {
+                        // Standard mode steps already handled by updateStatus mostly, 
+                        // but we can ensure steps are active
+                        if (els.stepScroll) {
+                            els.stepScroll.classList.remove('active');
+                            els.stepScroll.classList.add('completed');
+                        }
+                        if (els.stepWithdraw) {
+                            els.stepWithdraw.classList.add('active');
+                        }
+                    }
+
+                    // Standard update
+                    if (els.progressFill) els.progressFill.style.width = response.progress + '%';
+                    if (els.statusText) els.statusText.textContent = response.statusText;
+                }
+            } else {
+                // Check if we were in Selection Phase (not running, but have results)
+                chrome.storage.local.get(['savedScanResults'], (data) => {
+                    if (data.savedScanResults && data.savedScanResults.length > 0) {
+                        // We are in selection mode
+                        foundScanResults = data.savedScanResults;
+                        renderScanResults(foundScanResults);
+                        showView('scanResults');
+                        // Ensure message layout is prepped if they hit Withdraw
+                        if (els.progressLayoutStandard) els.progressLayoutStandard.style.display = 'none';
+                        if (els.progressLayoutMessage) els.progressLayoutMessage.style.display = 'block';
+                    }
+                });
             }
         });
     } catch (e) { }
@@ -1340,7 +1663,8 @@ async function startClearing() {
         messages: getMessagePatterns(),
         safeThreshold: settings.safeThreshold,
         safeUnit: settings.safeUnit,
-        safeMode: settings.safeMode
+        safeMode: settings.safeMode,
+        debugMode: settings.debugMode === true
     };
 
     // Validate message mode
@@ -1362,39 +1686,53 @@ async function startClearing() {
         updateFooterStatus();
 
         // Show correct progress layout based on mode
+
+        // Reset inline stats (may be visible from previous completion)
+        const inlineStats = document.getElementById('inline-stats');
+        if (inlineStats) inlineStats.style.display = 'none';
         if (els.progressLayoutStandard) els.progressLayoutStandard.style.display = 'block';
         if (els.progressLayoutMessage) els.progressLayoutMessage.style.display = 'none';
 
         // Show pause button, hide initially (will show when withdrawal starts)
         if (els.pauseBtn) {
             els.pauseBtn.style.display = 'none';
-            els.pauseBtn.textContent = 'Pause';
+            const pauseText = els.pauseBtn.querySelector('.btn-text');
+            if (pauseText) pauseText.textContent = 'Pause';
         }
         if (els.stopBtn) els.stopBtn.style.display = 'block';
 
-        // Reset people queue
-        if (els.peopleQueueSection) els.peopleQueueSection.style.display = 'none';
-        if (els.peopleQueueList) els.peopleQueueList.innerHTML = '';
+        // Reset people queue (legacy cleanup)
+        // if (els.peopleQueueSection) els.peopleQueueSection.style.display = 'none';
 
-        // Reset step states
-        if (els.stepScroll) {
-            els.stepScroll.classList.add('active');
-            els.stepScroll.classList.remove('completed');
-        }
-        if (els.stepScrollCheck) els.stepScrollCheck.style.display = 'none';
-        if (els.stepScrollNum) els.stepScrollNum.style.display = 'flex';
-        if (els.scrollProgressFill) els.scrollProgressFill.style.width = '0%';
-        if (els.scrollStatus) els.scrollStatus.textContent = 'Starting...';
-        if (els.stepScrollLabel) els.stepScrollLabel.classList.add('wave-text');
+        // Reset step states using helper
+        resetProgressView();
         if (els.stepWithdrawLabel) els.stepWithdrawLabel.classList.remove('wave-text');
 
         if (els.stepWithdraw) {
-            els.stepWithdraw.classList.remove('active', 'completed');
+            els.stepWithdraw.classList.remove('active', 'completed', 'stopped');
+            // Reset colors from previous completion state
+            els.stepWithdraw.style.borderColor = '';
         }
         if (els.stepWithdrawCheck) els.stepWithdrawCheck.style.display = 'none';
         if (els.stepWithdrawNum) els.stepWithdrawNum.style.display = 'flex';
-        if (els.progressFill) els.progressFill.style.width = '0%';
-        if (els.statusText) els.statusText.textContent = 'Waiting...';
+        if (els.progressFill) {
+            els.progressFill.style.width = '0%';
+            els.progressFill.style.backgroundColor = ''; // Reset color
+        }
+        if (els.statusText) {
+            els.statusText.textContent = 'Waiting...';
+            els.statusText.style.color = ''; // Reset color
+        }
+
+        // Reset section title color
+        if (els.sectionTitle) {
+            els.sectionTitle.style.color = '';
+        }
+
+        // Reset scroll progress fill color
+        if (els.scrollProgressFill) {
+            els.scrollProgressFill.style.backgroundColor = '';
+        }
 
         // Reset and show/hide message mode sections
         const matchesSection = document.getElementById('matches-list-section');
@@ -1404,25 +1742,30 @@ async function startClearing() {
 
         if (matchesList) matchesList.innerHTML = '';
 
+        if (matchesSection) {
+            matchesSection.style.display = 'block';
+            matchesSection.classList.remove('collapsed'); // Ensure open
+        }
+
         if (currentMode === 'message') {
-            // Show matches section and edit link, hide edit box by default
-            if (matchesSection) {
-                matchesSection.style.display = 'block';
-                // Restore collapsed state
-                chrome.storage.local.get(['matchesCollapsed'], (result) => {
-                    if (result.matchesCollapsed) {
-                        matchesSection.classList.add('collapsed');
-                    } else {
-                        matchesSection.classList.remove('collapsed');
-                    }
-                });
-            }
+            // Show matches section and edit link
             if (editSection) editSection.style.display = 'none';
             if (editLink) editLink.style.display = 'block';
+
+            // Set label
+            const title = document.getElementById('matches-label');
+            if (title) title.textContent = 'Matching connections';
         } else {
-            if (matchesSection) matchesSection.style.display = 'none';
             if (editSection) editSection.style.display = 'none';
             if (editLink) editLink.style.display = 'none';
+
+            // Also hide live scan results
+            if (els.liveScanResults) els.liveScanResults.style.display = 'none';
+            if (els.liveResultsList) els.liveResultsList.innerHTML = '';
+
+            // Set label
+            const title = document.getElementById('matches-label');
+            if (title) title.textContent = 'Removal Queue';
         }
     } catch (e) {
         alert('Error: Refresh the LinkedIn page and try again.');
@@ -1432,10 +1775,48 @@ async function startClearing() {
 async function stopClearing() {
     if (!activeTabId) return;
 
+    // Show loading state
+    if (els.stopBtn) {
+        els.stopBtn.classList.add('loading');
+        els.stopBtn.disabled = true;
+    }
+
     try {
+        // Determine current phase
+        const isScanning = operationStatus === 'scrolling' ||
+            (currentMode === 'message' && els.msgStepScan && els.msgStepScan.style.display !== 'none');
+
+        // Set cancel flag if stopping during scan (prevents COMPLETED handler from showing stats)
+        if (isScanning) {
+            isCancellingOperation = true;
+        }
+
         await chrome.tabs.sendMessage(activeTabId, { action: 'STOP_WITHDRAW' });
+
+        // Remove loading state after a brief delay
+        await new Promise(r => setTimeout(r, 300));
+
+        if (els.stopBtn) {
+            els.stopBtn.classList.remove('loading');
+            els.stopBtn.disabled = false;
+        }
+
+        // If stopped during scanning phase, go back to main view
+        if (isScanning) {
+            isCancellingOperation = false; // Reset flag
+            isOperationRunning = false;
+            operationStatus = '';
+            chrome.storage.local.remove(['savedScanResults', 'runningMode']);
+            showView('main');
+            setFooterStatus('Scan cancelled', 'info');
+        }
+        // If stopped during withdrawal, the COMPLETE message from content.js will handle the UI transition
     } catch (e) {
         // Fallback if content script not responding
+        if (els.stopBtn) {
+            els.stopBtn.classList.remove('loading');
+            els.stopBtn.disabled = false;
+        }
         isOperationRunning = false;
         showView('main');
     }
@@ -1446,23 +1827,49 @@ let isPaused = false;
 async function pauseClearing() {
     if (!activeTabId) return;
 
+    // Show loading state
+    if (els.pauseBtn) {
+        els.pauseBtn.classList.add('loading');
+        els.pauseBtn.disabled = true;
+    }
+
     try {
         if (isPaused) {
             // Resume
             await chrome.tabs.sendMessage(activeTabId, { action: 'RESUME_WITHDRAW' });
             isPaused = false;
-            if (els.pauseBtn) els.pauseBtn.textContent = 'Pause';
             operationStatus = 'withdrawing';
+
+            // Update button after brief delay
+            await new Promise(r => setTimeout(r, 200));
+            if (els.pauseBtn) {
+                els.pauseBtn.classList.remove('loading');
+                els.pauseBtn.disabled = false;
+                const textSpan = els.pauseBtn.querySelector('.btn-text');
+                if (textSpan) textSpan.textContent = 'Pause';
+            }
         } else {
             // Pause
             await chrome.tabs.sendMessage(activeTabId, { action: 'PAUSE_WITHDRAW' });
             isPaused = true;
-            if (els.pauseBtn) els.pauseBtn.textContent = 'Resume';
             operationStatus = 'paused';
+
+            // Update button after brief delay
+            await new Promise(r => setTimeout(r, 200));
+            if (els.pauseBtn) {
+                els.pauseBtn.classList.remove('loading');
+                els.pauseBtn.disabled = false;
+                const textSpan = els.pauseBtn.querySelector('.btn-text');
+                if (textSpan) textSpan.textContent = 'Resume';
+            }
         }
         updateFooterStatus();
     } catch (e) {
         console.error('Pause error:', e);
+        if (els.pauseBtn) {
+            els.pauseBtn.classList.remove('loading');
+            els.pauseBtn.disabled = false;
+        }
     }
 }
 
@@ -1470,6 +1877,9 @@ async function pauseClearing() {
 
 function handleMessage(message) {
     if (message.action === 'SCROLL_PROGRESS') {
+        // Message mode uses UPDATE_STATUS instead, skip standard layout updates
+        if (currentMode === 'message') return;
+
         const text = message.text || `Found ${message.found} of ~${message.total}`;
         const pct = message.progress || 0;
 
@@ -1489,30 +1899,11 @@ function handleMessage(message) {
             if (els.statusText) els.statusText.textContent = text;
         }
 
-        // Update matches list for legacy message mode (Scan logic uses SCAN_COMPLETE instead)
-        if (message.foundMatches && message.foundMatches.length > 0 && currentMode === 'message' && !(els.stepScroll && els.stepScroll.classList.contains('active'))) {
-            const matchesList = document.getElementById('matches-list');
-            const matchesSection = document.getElementById('matches-list-section');
-
-            if (matchesList && matchesSection) {
-                matchesSection.style.display = 'block';
-
-                // Build table rows from matches
-                matchesList.innerHTML = message.foundMatches.map(m =>
-                    `<tr data-name="${m.name}">
-                        <td>${m.name}</td>
-                        <td>${m.age || '-'}</td>
-                        <td></td>
-                    </tr>`
-                ).join('');
-
-                // Scroll to keep most recent in view
-                matchesSection.scrollTop = matchesSection.scrollHeight;
-            }
-        }
-
         updateFooterStatus();
     } else if (message.action === 'SCROLL_COMPLETE') {
+        // Message Mode handles its own transition from Scan -> Selection -> Withdraw
+        if (currentMode === 'message') return;
+
         // Mark scroll step as done, activate withdraw step
         if (els.stepScroll) {
             els.stepScroll.classList.remove('active');
@@ -1533,6 +1924,41 @@ function handleMessage(message) {
         // Update operation status
         operationStatus = 'withdrawing';
         updateFooterStatus();
+    } else if (message.action === 'POPULATE_QUEUE') {
+        const targets = message.targets || [];
+
+        // Ensure section is visible
+        const matchesSection = document.getElementById('matches-list-section');
+        if (matchesSection) {
+            matchesSection.style.display = 'block';
+            matchesSection.classList.remove('collapsed');
+        }
+
+        // Populate queue
+        const matchesList = document.getElementById('matches-list');
+        if (matchesList) {
+            targets.forEach(t => {
+                const row = document.createElement('tr');
+                row.setAttribute('data-name', t.name);
+
+                const cellName = document.createElement('td');
+                cellName.innerHTML = `${t.name} <span class="q-age" style="font-size: 11px; color: var(--text-secondary); margin-left: 4px;">(${t.age || ''})</span>`;
+
+                const cellIcon = document.createElement('td');
+                cellIcon.className = 'icon-cell';
+
+                row.appendChild(cellName);
+                row.appendChild(cellIcon);
+
+                if (message.prepend && matchesList.firstChild) {
+                    matchesList.insertBefore(row, matchesList.firstChild);
+                } else {
+                    matchesList.appendChild(row);
+                }
+            });
+            // Save state immediately
+            saveWithdrawalQueue();
+        }
     } else if (message.action === 'UPDATE_STATUS') {
         const text = message.text;
         const pct = message.progress;
@@ -1554,17 +1980,18 @@ function handleMessage(message) {
                 if (els.msgWithdrawFill) els.msgWithdrawFill.style.width = pct + '%';
                 if (els.msgWithdrawStatus) els.msgWithdrawStatus.textContent = text;
 
+                // Show pause button during withdrawal
+                if (els.pauseBtn) els.pauseBtn.style.display = 'flex';
+
+                // Show unified matches list section if not visible
+                const matchesSection = document.getElementById('matches-list-section');
+                if (matchesSection && matchesSection.style.display === 'none') {
+                    matchesSection.style.display = 'block';
+                }
+
                 // Populate Withdrawal Queue with focused list items
-                if (els.withdrawalLogList && message.clearedData) {
+                if (message.clearedData) {
                     updateWithdrawalQueue(message.clearedData);
-                } else if (els.withdrawalLogList && text && message.currentPerson) {
-                    // Update queue to show current person as active
-                    const existingActive = els.withdrawalLogList.querySelector('.queue-item.active');
-                    if (existingActive) {
-                        existingActive.classList.remove('active');
-                        existingActive.classList.add('pending');
-                    }
-                    // Mark current person active (will be handled by updateWithdrawalQueue)
                 }
             }
         }
@@ -1578,11 +2005,16 @@ function handleMessage(message) {
             if (els.progressFill) els.progressFill.style.width = pct + '%';
 
             // Show pause button when withdrawing starts
-            if (els.pauseBtn) els.pauseBtn.style.display = 'block';
-            if (els.liveWithdrawalLog) els.liveWithdrawalLog.style.display = 'block';
+            if (els.pauseBtn) els.pauseBtn.style.display = 'flex';
 
-            // Populate Withdrawal Queue with focused list items
-            if (els.withdrawalLogList && message.clearedData) {
+            // Show unified matches list section if not visible
+            const matchesSection = document.getElementById('matches-list-section');
+            if (matchesSection && matchesSection.style.display === 'none') {
+                matchesSection.style.display = 'block';
+            }
+
+            // Populate Withdrawal Queue
+            if (message.clearedData) {
                 updateWithdrawalQueue(message.clearedData);
             }
         }
@@ -1683,6 +2115,13 @@ function handleMessage(message) {
     } else if (message.action === 'SCAN_COMPLETE') {
         handleScanComplete(message);
     } else if (message.action === 'COMPLETED') {
+        // If we're cancelling during scan phase, skip all completion UI updates
+        // (stopClearing will handle the UI transition)
+        if (isCancellingOperation) {
+            isOperationRunning = false;
+            return;
+        }
+
         const isStopped = message.message && (message.message.includes('Stopped') || message.message.includes('stopped'));
         const wasMessageMode = currentMode === 'message';
 
@@ -1752,6 +2191,24 @@ function handleMessage(message) {
             return;
         }
 
+        // For Message mode completion (not stopped): filter out withdrawn groups for "Back to Scan Results" button
+        // BUT: Do not filter if it was a safety stop or error!
+        const isSafetyOrError = message.message && (
+            message.message.toLowerCase().includes('safety') ||
+            message.message.toLowerCase().includes('limit') ||
+            message.message.toLowerCase().includes('error')
+        );
+
+        if (wasMessageMode && !isStopped && !isSafetyOrError) {
+            // Remove withdrawn groups from selectedScanHashes and foundScanResults
+            selectedScanHashes.forEach(hash => {
+                // Remove from foundScanResults
+                foundScanResults = foundScanResults.filter(r => r.id !== hash);
+            });
+            // Clear selection for next time
+            selectedScanHashes.clear();
+        }
+
         // Stay on progress view and show inline stats with fade-in
         // (Don't navigate to completed view)
         updateFooterStatus();
@@ -1761,101 +2218,21 @@ function handleMessage(message) {
             els.stepScroll.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
             els.stepScroll.style.opacity = '0';
             els.stepScroll.style.transform = 'translateY(-20px)';
-            setTimeout(() => {
-                els.stepScroll.style.display = 'none';
+            hideScrollTimeout = setTimeout(() => {
+                // Only hide if operation hasn't been restarted
+                if (!isOperationRunning) {
+                    els.stepScroll.style.display = 'none';
+                }
+                hideScrollTimeout = null;
             }, 500);
         }
 
-        // Color the withdrawal progress bar based on status
-        const isSafetyStopped = stats.message && stats.message.toLowerCase().includes('safety');
-        let statusColor = 'var(--success)'; // Default green
-        if (isStopped && !isSafetyStopped) {
-            statusColor = 'var(--danger)'; // Red for user stop
-        } else if (isSafetyStopped) {
-            statusColor = 'var(--warning)'; // Orange for safety stop
-        }
-
-        if (els.progressFill) {
-            els.progressFill.style.backgroundColor = statusColor;
-        }
-
-        // Get inline stats elements
-        const inlineStats = document.getElementById('inline-stats');
-        const inlineStatCleared = document.getElementById('inline-stat-cleared');
-        const inlineStatRemaining = document.getElementById('inline-stat-remaining');
-        const inlineStatCapacity = document.getElementById('inline-stat-capacity');
-        const inlineHealthFill = document.getElementById('inline-health-fill');
-        const inlineHealthText = document.getElementById('inline-health-text');
-        const inlineAlltime = document.getElementById('inline-alltime');
-        const inlineAlltimeCount = document.getElementById('inline-alltime-count');
-
-        // Populate stats
-        if (inlineStatCleared) inlineStatCleared.textContent = stats.cleared || 0;
-        if (inlineStatRemaining) inlineStatRemaining.textContent = stats.remaining || '-';
-        const capacity = stats.remaining ? Math.max(0, 1200 - stats.remaining) : '-';
-        if (inlineStatCapacity) inlineStatCapacity.textContent = capacity;
-
-        // Update health bar with color coding
-        if (inlineHealthFill && stats.remaining) {
-            const pct = Math.min(100, (stats.remaining / 1200) * 100);
-            inlineHealthFill.style.width = pct + '%';
-
-            // Color based on capacity used (remaining = how many pending)
-            // Red if > 90%, yellow if > 70%, green otherwise
-            if (pct > 90) {
-                inlineHealthFill.style.backgroundColor = 'var(--danger)';
-            } else if (pct > 70) {
-                inlineHealthFill.style.backgroundColor = 'var(--warning)';
-            } else {
-                inlineHealthFill.style.backgroundColor = 'var(--success)';
-            }
-        }
-        if (inlineHealthText && stats.remaining) {
-            inlineHealthText.textContent = `${stats.remaining} / ~1,200`;
-        }
-
-        // Hide action buttons, show inline stats with animation
-        if (els.stopBtn) els.stopBtn.style.display = 'none';
-        if (els.pauseBtn) els.pauseBtn.style.display = 'none';
-        if (els.liveWithdrawalLog) els.liveWithdrawalLog.style.display = 'none';
-
-        if (inlineStats) {
-            inlineStats.style.display = 'block';
-            inlineStats.style.opacity = '0';
-            inlineStats.style.transform = 'translateY(10px)';
-            inlineStats.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
-            requestAnimationFrame(() => {
-                inlineStats.style.opacity = '1';
-                inlineStats.style.transform = 'translateY(0)';
-            });
-        }
-
-        // Show inline continue options based on mode
-        const inlineContinue = document.getElementById('inline-continue');
-        if (inlineContinue) {
-            if (wasMessageMode) {
-                // For message mode, populate remaining groups or show "Done" only
-                const inlineContStandard = document.getElementById('inline-continue-standard');
-                const inlineContMessage = document.getElementById('inline-continue-message');
-                if (inlineContStandard) inlineContStandard.style.display = 'none';
-                if (inlineContMessage) inlineContMessage.style.display = 'block';
-            } else {
-                const inlineContStandard = document.getElementById('inline-continue-standard');
-                const inlineContMessage = document.getElementById('inline-continue-message');
-                if (inlineContStandard) inlineContStandard.style.display = 'block';
-                if (inlineContMessage) inlineContMessage.style.display = 'none';
-            }
-            inlineContinue.style.display = 'block';
-        }
-
-        // Show alltime count
-        if (inlineAlltime) inlineAlltime.style.display = 'block';
-
-        // Increment alltime counter and save
+        // Fetch alltime count and update storage/UI
         chrome.storage.local.get({ alltimeCleared: 0 }, (data) => {
             const alltimeTotal = (data.alltimeCleared || 0) + (stats.cleared || 0);
             const now = Date.now();
 
+            // Save stats first
             chrome.storage.local.set({
                 lastRunStats: stats,
                 alltimeCleared: alltimeTotal,
@@ -1863,6 +2240,9 @@ function handleMessage(message) {
                 postClearTimestamp: now,
                 runningMode: null
             });
+
+            // Update UI using the unified function
+            showInlineCompleted(stats, message.message, alltimeTotal);
         });
     } else if (message.action === 'GET_STATUS_RESPONSE') {
         isOperationRunning = message.isRunning;
@@ -1894,9 +2274,148 @@ function handleMessage(message) {
     }
 }
 
-function showInlineCompleted(stats, completionMessage, alltimeCount) {
-    // Hide stop button
+function showMessageModeCompleted(stats, completionMessage) {
+    // 1. Force hide global controls
     if (els.stopBtn) els.stopBtn.style.display = 'none';
+    if (els.pauseBtn) els.pauseBtn.style.display = 'none';
+
+    // 2. Hide Count/Age specific elements
+    const inlineContinue = document.getElementById('inline-continue');
+    if (inlineContinue) inlineContinue.style.display = 'none';
+
+    // 3. Update Message Mode specific progress elements
+    let stateType = 'success';
+    if (completionMessage) {
+        const msg = completionMessage.toLowerCase();
+        if (msg.includes('safety') || msg.includes('too recent')) stateType = 'warning';
+        else if (msg.includes('no connection') || msg.includes('limit reached')) stateType = 'caution';
+        else if (msg.includes('error') || msg.includes('failed')) stateType = 'error';
+    }
+
+    // Update status text
+    if (els.msgWithdrawStatus) {
+        els.msgWithdrawStatus.textContent = completionMessage || 'Complete!';
+        els.msgWithdrawStatus.className = 'status-text ' + (stateType === 'success' ? 'success-text' : stateType + '-text');
+    }
+
+    let colorVar = 'var(--success)';
+    if (stateType === 'error') {
+        colorVar = 'var(--danger)';
+    } else if (stateType === 'warning') {
+        colorVar = 'var(--warning)';
+    }
+
+    if (els.msgWithdrawFill) els.msgWithdrawFill.style.backgroundColor = colorVar;
+
+    const msgStepContainer = document.getElementById('msg-step-withdraw');
+    if (msgStepContainer) msgStepContainer.style.borderColor = colorVar;
+
+    const msgStatusText = document.getElementById('msg-withdraw-status');
+    if (msgStatusText) msgStatusText.style.color = colorVar;
+
+    // 4. Show Inline Stats (Shared component, but we ensure it's visible)
+    const inlineStats = document.getElementById('inline-stats');
+    if (inlineStats) {
+        // Populate stats
+        const remaining = stats.remaining || 0;
+        const capacity = Math.max(0, 1200 - remaining);
+        const healthPct = Math.min(100, (remaining / 1200) * 100);
+
+        const inlineCleared = document.getElementById('inline-stat-cleared');
+        const inlineRemaining = document.getElementById('inline-stat-remaining');
+        const inlineCapacity = document.getElementById('inline-stat-capacity');
+        const inlineHealthFill = document.getElementById('inline-health-fill');
+        const inlineHealthText = document.getElementById('inline-health-text');
+
+        if (inlineCleared) inlineCleared.textContent = stats.cleared || 0;
+        if (inlineRemaining) inlineRemaining.textContent = remaining.toLocaleString();
+        if (inlineCapacity) inlineCapacity.textContent = `~${capacity} more`;
+        if (inlineHealthText) inlineHealthText.textContent = `${remaining.toLocaleString()} / ~1200`;
+
+        if (inlineHealthFill) {
+            inlineHealthFill.style.width = healthPct + '%';
+            inlineHealthFill.classList.remove('green', 'yellow', 'red');
+            if (healthPct < 50) inlineHealthFill.classList.add('green');
+            else if (healthPct < 80) inlineHealthFill.classList.add('yellow');
+            else inlineHealthFill.classList.add('red');
+        }
+
+        inlineStats.style.display = 'block';
+        inlineStats.classList.add('fade-in-up');
+    }
+
+    // 5. Render Message Mode Actions (Back / Done)
+    // Clean up first
+    const existingContainer = document.getElementById('message-mode-actions');
+    if (existingContainer) existingContainer.remove();
+
+    const actionContainer = document.createElement('div');
+    actionContainer.id = 'message-mode-actions';
+    actionContainer.style.marginTop = '16px';
+    actionContainer.style.display = 'flex';
+    actionContainer.style.gap = '8px';
+    actionContainer.className = 'fade-in-up';
+    actionContainer.innerHTML = `
+        <button id="back-to-scan-btn" class="secondary-btn" style="flex: 1;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 8px;">
+                <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+            Back to Scan Results
+        </button>
+        <button id="msg-done-btn" class="primary-btn" style="flex: 1;">
+            Done
+        </button>
+    `;
+
+    // Append after inline stats
+    if (inlineStats && inlineStats.parentNode) {
+        inlineStats.parentNode.insertBefore(actionContainer, inlineStats.nextSibling);
+    }
+
+    // Add handlers
+    const backBtn = document.getElementById('back-to-scan-btn');
+    if (backBtn) {
+        backBtn.addEventListener('click', () => {
+            // CLEANUP: Aggressively remove message mode UI before switching views
+            clearMessageModeUI();
+
+            // Show scan results with remaining groups (withdrawn ones filtered out)
+            renderScanResults(foundScanResults);
+            showView('scanResults');
+        });
+    }
+
+    const doneBtn = document.getElementById('msg-done-btn');
+    if (doneBtn) {
+        doneBtn.addEventListener('click', async () => {
+            // CLEANUP: Aggressively remove message mode UI before going home
+            clearMessageModeUI();
+
+            chrome.storage.local.set({ showingPostClear: false, postClearTimestamp: 0 });
+            await goHome();
+        });
+    }
+
+    // 6. Persistence
+    chrome.storage.local.set({ showingPostClear: true, postClearTimestamp: Date.now() });
+}
+
+function showInlineCompleted(stats, completionMessage, alltimeCount) {
+    // Determine mode early regarding of global state
+    const effectiveMode = (stats && stats.mode) ? stats.mode : currentMode;
+
+    if (effectiveMode === 'message') {
+        showMessageModeCompleted(stats, completionMessage);
+        return;
+    }
+
+    // Hide stop and pause buttons
+    if (els.stopBtn) els.stopBtn.style.display = 'none';
+    if (els.pauseBtn) els.pauseBtn.style.display = 'none';
+
+    // Clean up any old message mode action buttons to prevent duplication
+    const existingActions = document.getElementById('message-mode-actions');
+    if (existingActions) existingActions.remove();
 
     // Remove any pulsing animations
     if (els.stepScrollLabel) els.stepScrollLabel.classList.remove('wave-text');
@@ -1990,12 +2509,27 @@ function showInlineCompleted(stats, completionMessage, alltimeCount) {
             inlineStats.classList.add('fade-in-up');
         }
 
-        // Show continue section
+        // Determine effective mode - utilize stats.mode if available, fallback to currentMode
+        // This is already handled by the early return for 'message' mode.
+        // So this block is for count/age modes.
+
+        // Show continue section (different based on mode)
         const inlineContinue = document.getElementById('inline-continue');
+
+        // Force hide stop/pause again just in case
+        if (els.stopBtn) els.stopBtn.style.display = 'none';
+        if (els.pauseBtn) els.pauseBtn.style.display = 'none';
+
+        /* Message mode handled by showMessageModeCompleted */
+        // For count/age modes, show standard continue options
         if (inlineContinue) {
             inlineContinue.style.display = 'block';
             inlineContinue.classList.add('fade-in-up');
         }
+
+        // Ensure message mode buttons are also removed if we are in count mode
+        const existingContainer = document.getElementById('message-mode-actions');
+        if (existingContainer) existingContainer.remove();
 
         // Show alltime stats
         const inlineAlltime = document.getElementById('inline-alltime');
@@ -2014,24 +2548,6 @@ async function showLastRunStats() {
     const data = await chrome.storage.local.get(['lastRunStats']);
     if (data.lastRunStats) {
         stats = data.lastRunStats;
-    }
-
-    // Try to get fresh count from LinkedIn
-    if (activeTabId) {
-        try {
-            chrome.tabs.sendMessage(activeTabId, { action: 'GET_COUNT' }, (response) => {
-                if (chrome.runtime.lastError) {
-                    showCompleted(false);
-                    return;
-                }
-                if (response) {
-                    stats.remaining = response.linkedInCount || response.count || stats.remaining || 0;
-                    chrome.storage.local.set({ lastRunStats: stats });
-                }
-                showCompleted(false);
-            });
-            return;
-        } catch (e) { }
     }
 
     showCompleted(false); // false = don't show continue options when viewing stats
@@ -2090,18 +2606,12 @@ function renderHistory(history) {
                 ? `<a href="${w.profileUrl}" target="_blank" title="View Profile">${w.name}</a>`
                 : w.name;
 
-            // Add project name if available
-            const projectHtml = w.project
-                ? `<div class="session-item-project" style="font-size: 11px; color: var(--text-tertiary); margin-top: 2px;">${w.project}</div>`
-                : '';
-
             return `
                 <div class="session-item">
                     <div class="session-item-info">
                         <span class="session-item-name">
                             ${nameHtml} <span class="session-item-age">(${w.age || 'Unknown age'})</span>
                         </span>
-                        ${projectHtml}
                     </div>
                     <span class="session-item-time">${time}</span>
                 </div>
@@ -2233,6 +2743,7 @@ async function saveSettingsAndReturn() {
         safeThreshold: parseInt(els.safeThreshold?.value, 10) || 1,
         safeUnit: els.safeUnit?.value || 'month',
         safeMode: els.safeModeToggle?.checked !== false,
+        debugMode: els.debugModeToggle?.checked === true,
         selectorWithdraw: els.selectorWithdraw?.value || DEFAULTS.selectorWithdraw,
         selectorConfirm: els.selectorConfirm?.value || DEFAULTS.selectorConfirm
     });
@@ -2250,6 +2761,9 @@ async function resetToDefaults() {
 }
 
 async function goHome() {
+    // Aggressive cleanup when going home
+    clearMessageModeUI();
+
     // Clear persisted results when explicitly going home
     await chrome.storage.local.remove('savedScanResults');
 
@@ -2277,12 +2791,9 @@ async function goHome() {
             }
         } else {
             // Not running
-            // Only convert true->false if we were running? 
-            // Better to trust response.
-            if (isOperationRunning) {
-                // Was running, now stopped?
-                isOperationRunning = false;
-            }
+            // Explicitly reset status to ensure footer goes back to default
+            isOperationRunning = false;
+            operationStatus = '';
         }
     } catch (e) {
         console.log('Status ping failed:', e);
@@ -2330,6 +2841,43 @@ async function goHome() {
 
 // Alias for backward compatibility
 const goToMain = goHome;
+
+function resetProgressView() {
+    // Clear any pending hide animation
+    if (typeof hideScrollTimeout !== 'undefined' && hideScrollTimeout) {
+        clearTimeout(hideScrollTimeout);
+        hideScrollTimeout = null;
+    }
+
+    if (els.stepScroll) {
+        els.stepScroll.classList.add('active');
+        els.stepScroll.classList.remove('completed', 'stopped', 'fade-out');
+        els.stepScroll.style.display = 'block';
+        els.stepScroll.style.opacity = '1';
+        els.stepScroll.style.transform = 'none';
+        els.stepScroll.style.transition = '';
+    }
+    if (els.stepScrollCheck) els.stepScrollCheck.style.display = 'none';
+    if (els.stepScrollNum) els.stepScrollNum.style.display = 'flex';
+    if (els.scrollProgressFill) els.scrollProgressFill.style.width = '0%';
+    if (els.scrollStatus) els.scrollStatus.textContent = 'Starting...';
+    if (els.stepScrollLabel) els.stepScrollLabel.classList.add('wave-text');
+
+    if (els.stepWithdraw) {
+        els.stepWithdraw.classList.remove('active', 'completed', 'stopped', 'error', 'warning');
+    }
+    if (els.stepWithdrawCheck) {
+        els.stepWithdrawCheck.style.display = 'none';
+        els.stepWithdrawCheck.innerHTML = '<path d="M20 6L9 17l-5-5" />'; // Reset to checkmark
+    }
+    if (els.stepWithdrawNum) els.stepWithdrawNum.style.display = 'flex';
+    if (els.progressFill) els.progressFill.style.width = '0%';
+    if (els.statusText) {
+        els.statusText.textContent = 'Waiting...';
+        els.statusText.classList.remove('error-text', 'warning-text', 'caution-text', 'success-text');
+    }
+    if (els.stepWithdrawLabel) els.stepWithdrawLabel.classList.remove('wave-text');
+}
 
 // ============ CONTINUE CLEARING ============
 
@@ -2380,7 +2928,8 @@ async function continueClearing() {
         ageUnit: selected === 'age' ? (els.continueAgeUnit?.value || 'month') : 'month',
         safeThreshold: settings.safeThreshold,
         safeUnit: settings.safeUnit,
-        safeMode: settings.safeMode
+        safeMode: settings.safeMode,
+        debugMode: settings.debugMode === true
     };
 
     try {
@@ -2436,7 +2985,8 @@ async function inlineContinueClearing() {
         ageUnit: selected === 'age' ? (ageUnitInput?.value || 'month') : 'month',
         safeThreshold: settings.safeThreshold,
         safeUnit: settings.safeUnit,
-        safeMode: settings.safeMode
+        safeMode: settings.safeMode,
+        debugMode: settings.debugMode === true
     };
 
     try {
@@ -2469,7 +3019,39 @@ async function inlineContinueClearing() {
     }
 }
 
+function clearMessageModeUI() {
+    // 1. Remove action buttons
+    const existingActions = document.getElementById('message-mode-actions');
+    if (existingActions) existingActions.remove();
+
+    // 2. Reset inline stats visibility
+    const inlineStats = document.getElementById('inline-stats');
+    if (inlineStats) {
+        inlineStats.style.display = 'none';
+        inlineStats.classList.remove('fade-in-up');
+    }
+
+    // 3. Reset explicit overrides
+    if (els.stopBtn) els.stopBtn.style.display = ''; // Reset to default (css ruled)
+    if (els.pauseBtn) els.pauseBtn.style.display = '';
+
+    // 4. Reset Message Mode styling (remove warning colors)
+    const msgStepContainer = document.getElementById('msg-step-withdraw');
+    if (msgStepContainer) msgStepContainer.style.borderColor = ''; // Reset to default
+
+    const msgStatusText = document.getElementById('msg-withdraw-status');
+    if (msgStatusText) msgStatusText.style.color = ''; // Reset to default
+
+    if (els.msgWithdrawFill) els.msgWithdrawFill.style.backgroundColor = ''; // Reset to default
+
+    // 5. Ensure standard "continue" section is hidden until explicitly shown
+    const inlineContinue = document.getElementById('inline-continue');
+    if (inlineContinue) inlineContinue.style.display = 'none';
+}
+
 function resetProgressView() {
+    // Always start with a clean slate regarding message mode artifacts
+    clearMessageModeUI();
     if (els.stepScroll) {
         els.stepScroll.style.display = 'block';
         els.stepScroll.classList.add('active');

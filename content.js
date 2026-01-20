@@ -9,10 +9,12 @@ let safeThreshold = 1;
 let safeUnit = 'month';
 let currentStatusText = "Ready";
 let currentProgress = 0;
+let currentSubMode = 'idle'; // 'scanning', 'withdrawing', 'idle'
 let oldestCleared = '-';
 let actionDelay = 600;
 let totalToWithdraw = 0;
 let messagePatterns = []; // For message mode filtering
+let debugMode = false; // Debug mode - simulates withdrawals without clicking
 
 // Dynamic timing
 let baseWait = 300;
@@ -32,6 +34,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         safeThreshold = message.safeThreshold || 1;
         safeUnit = message.safeUnit || 'month';
         messagePatterns = message.messages || [];
+        debugMode = message.debugMode === true;
         processedCount = 0;
         oldestCleared = '-';
         totalToWithdraw = 0;
@@ -49,7 +52,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             isRunning: isRunning,
             statusText: currentStatusText,
             progress: currentProgress,
-            target: targetCount
+            target: targetCount,
+            subMode: currentSubMode,
+            mode: currentMode
         });
     } else if (message.action === 'GET_COUNT') {
         // Quick count retrieval
@@ -70,10 +75,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.action === 'SCAN_CONNECTIONS') {
         if (isRunning) return;
         isRunning = true;
+        currentMode = 'message'; // Ensure mode is set for GET_STATUS
         scanConnections();
     } else if (message.action === 'WITHDRAW_SELECTED') {
         if (isRunning) return;
         isRunning = true;
+        currentMode = 'message'; // Message mode withdrawal
+        debugMode = message.debugMode === true;
+        safeMode = message.safeMode !== false;
+        safeThreshold = message.safeThreshold !== undefined ? message.safeThreshold : 1;
+        safeUnit = message.safeUnit || 'month';
         withdrawSelected(message.selectedHashes);
     } else if (message.action === 'SHOW_CONNECTION') {
         showConnection(message.hash);
@@ -124,13 +135,7 @@ function getConnectionMessage(btn) {
 // Track found matching people during scroll
 let foundMatchingPeople = [];
 
-// Strip common greeting patterns like "Hi John," or "Hello Sarah,"
-function normalizeMessage(text) {
-    if (!text) return '';
-    // Remove greeting patterns: Hi/Hello/Hey [Name],
-    // Matches: "Hi John," "Hello Sarah," "Hey Mike," etc.
-    return text.replace(/^(Hi|Hello|Hey)\s+[A-Za-z]+[,!]?\s*/i, '').trim();
-}
+// function normalizeMessage(text) { ... } removed in favor of more complex version below
 
 // Check if connection matches any message pattern
 function matchesMessagePattern(btn) {
@@ -202,8 +207,113 @@ async function startProcess() {
     console.log('ClearConnect: Scroll container', scrollContainer ? 'found' : 'using window');
 
     updateStatus('Scrolling to bottom...', 0);
+
+    // Reset scan state
+    scannedUrns.clear();
+    lastScannedIndex = 0;
+
     await scrollToBottom();
-    if (isRunning) processNext();
+
+    if (isRunning) {
+        // Pre-scan for targets (Final sweep / Count Mode)
+        if (currentMode === 'count' || currentMode === 'age') {
+            await scanForTargets();
+        }
+        processNext();
+    }
+}
+
+let scannedUrns = new Set();
+let lastScannedIndex = 0;
+
+async function scanVisibleAgeTargets(buttons) {
+    if (currentMode !== 'age') return;
+
+    const targets = [];
+    // Iterate new buttons only
+    for (let i = lastScannedIndex; i < buttons.length; i++) {
+        const btn = buttons[i];
+        const urn = getProfileUrl(btn) || getPersonName(btn);
+
+        if (scannedUrns.has(urn)) continue;
+
+        // Age Logic: Add if Old Enough (Status !shouldStop) and Safe
+        // shouldStop returns true for "Too Young"
+        if (!shouldStop(btn) && isSafe(btn)) {
+            const personName = getPersonName(btn);
+            const age = getAge(btn);
+            targets.push({
+                name: personName,
+                age: age ? age.text : '',
+                status: 'pending'
+            });
+            scannedUrns.add(urn);
+        }
+    }
+
+    lastScannedIndex = buttons.length;
+
+    // Send batch (Prepend)
+    if (targets.length > 0) {
+        try {
+            chrome.runtime.sendMessage({
+                action: 'POPULATE_QUEUE',
+                targets: targets,
+                prepend: true
+            });
+        } catch (e) { }
+    }
+}
+
+async function scanForTargets() {
+    // Wait for stability
+    await wait(1000);
+
+    const buttons = findWithdrawButtons();
+    const targets = [];
+
+    // Scan from bottom up (Oldest to Newest)
+    for (let i = buttons.length - 1; i >= 0; i--) {
+        const btn = buttons[i];
+        const urn = getProfileUrl(btn) || getPersonName(btn);
+
+        // Count Limit check
+        if (currentMode === 'count' && targets.length >= targetCount) break;
+
+        // Safety check (too recent)
+        if (!isSafe(btn)) break;
+
+        // Age Limit check (too young)
+        if (currentMode === 'age' && shouldStop(btn)) break;
+
+        // Skip if already scanned
+        if (scannedUrns.has(urn) && currentMode === 'age') continue;
+
+        // Add to targets
+        const personName = getPersonName(btn);
+        const age = getAge(btn);
+
+        targets.push({
+            name: personName,
+            age: age ? age.text : '',
+            status: 'pending'
+        });
+
+        if (currentMode === 'age') scannedUrns.add(urn);
+    }
+
+    // Send batch to Popup
+    if (targets.length > 0) {
+        try {
+            chrome.runtime.sendMessage({
+                action: 'POPULATE_QUEUE',
+                targets: targets,
+                prepend: false // Append for Bottom-Up
+            });
+        } catch (e) {
+            // Popup might be closed, irrelevant
+        }
+    }
 }
 
 async function scrollToBottom() {
@@ -220,6 +330,12 @@ async function scrollToBottom() {
 
     while (isRunning && noChange < maxRetries) {
         const buttons = findWithdrawButtons();
+
+        // Progressive Scan for Age Mode
+        if (currentMode === 'age') {
+            scanVisibleAgeTargets(buttons);
+        }
+
         const currentCount = buttons.length;
         const currentLastCard = buttons.length > 0 ? buttons[buttons.length - 1] : null;
 
@@ -336,24 +452,36 @@ async function scrollToBottom() {
         // BOTTOM DETECTION - Multiple checks
         const atBottom = isAtScrollBottom();
         const sameLastCard = lastCardElement === currentLastCard && currentLastCard !== null;
-        const nearLinkedInCount = currentCount >= linkedInTotal - 30;
 
-        // If at scroll bottom AND same card for 3+ tries → definitely at bottom
-        if (atBottom && sameLastCard && noChange >= 3) {
-            console.log('ClearConnect: At scroll bottom, card unchanged, proceeding');
+        // Stricter total check
+        const tolerance = 40; // Allow some disparity (hidden items, ads, etc)
+        const nearLinkedInCount = currentCount >= (linkedInTotal - tolerance);
+
+        // Conditions to break loop:
+        // 1. We are near the official total AND haven't seen changes for a bit (fast exit)
+        if (nearLinkedInCount && noChange >= 2) {
+            console.log('ClearConnect: Reached near LinkedIn total count, proceeding');
             break;
         }
 
-        // If near LinkedIn count AND no change for 3+ tries → likely at bottom
-        if (nearLinkedInCount && noChange >= 3) {
-            console.log('ClearConnect: Near LinkedIn total, proceeding');
+        // 2. We are literally at scroll bottom, card unchanged, and we've waited enough (slow exit)
+        if (atBottom && sameLastCard && noChange >= 5) {
+            console.log('ClearConnect: At physical scroll bottom with no updates, proceeding');
             break;
         }
 
-        // If no new items for 5+ tries AND at scroll bottom → definitely done
-        if (noChange >= 5 && atBottom) {
-            console.log('ClearConnect: Stuck at bottom, proceeding');
+        // 3. Absolute timeout / stuck safety (very slow exit)
+        if (noChange >= 8) {
+            console.log('ClearConnect: Stuck for too long, proceeding with what we have');
             break;
+        }
+
+        // Jiggle logic if stuck
+        if (noChange >= 3) {
+            console.log('ClearConnect: Jiggling to trigger load...');
+            scrollBy(-600);
+            await wait(600);
+            scrollTo(getScrollHeight());
         }
     }
 
@@ -486,7 +614,7 @@ function isSafe(button) {
     else return false;
 
     const thresholdMonths = safeUnit === 'month' ? safeThreshold : safeThreshold / 4;
-    return ageInMonths >= thresholdMonths;
+    return ageInMonths > thresholdMonths;
 }
 
 function shouldStop(button) {
@@ -582,13 +710,45 @@ async function processNext() {
     const total = totalToWithdraw > 0 ? totalToWithdraw : 0;
     const progressPct = total > 0 ? Math.round((processedCount / total) * 100) : 0;
 
-    updateStatus(`[${processedCount + 1}/${total || '?'}] ${personName}`, progressPct);
+    updateStatus(`[${processedCount + 1}/${total || '?'}] ${personName}`, progressPct, {
+        name: personName,
+        age: ageText,
+        status: 'active'
+    });
 
     btn.scrollIntoView({ behavior: 'auto', block: 'center' });
     await wait(150);
-    btn.click();
 
-    const confirmed = await waitAndClickDialogConfirm();
+    let confirmed = false;
+
+    if (debugMode) {
+        // Debug mode: Just highlight the button, don't click
+        const card = btn.closest('[role="listitem"]');
+        if (card) {
+            card.style.transition = 'background 0.3s, border 0.3s';
+            card.style.backgroundColor = '#fff3cd';
+            card.style.border = '2px solid #ffc107';
+        }
+        btn.style.transition = 'all 0.3s';
+        btn.style.backgroundColor = '#ffc107';
+        btn.style.color = '#000';
+        btn.style.fontWeight = 'bold';
+
+        await wait(800); // Simulate processing time
+        confirmed = true; // Pretend it was successful
+
+        // Hide the card after highlighting to simulate withdrawal
+        // This prevents the same button from being processed again
+        if (card) {
+            setTimeout(() => {
+                card.style.display = 'none';
+            }, 1000);
+        }
+    } else {
+        // Normal mode: Actually click the button
+        btn.click();
+        confirmed = await waitAndClickDialogConfirm();
+    }
 
     if (confirmed) {
         processedCount++;
@@ -603,10 +763,12 @@ async function processNext() {
 
         // Send status with full cleared data for UI update
         const progressPctAfter = totalToWithdraw > 0 ? Math.round((processedCount / totalToWithdraw) * 100) : 0;
-        updateStatus(`[${processedCount}/${totalToWithdraw || '?'}] Cleared ${personName}`, progressPctAfter, {
+        const statusPrefix = debugMode ? '[DEBUG] ' : '';
+        updateStatus(`${statusPrefix}[${processedCount}/${totalToWithdraw || '?'}] Cleared ${personName}`, progressPctAfter, {
             name: personName,
             age: ageText,
-            profileUrl: profileUrl
+            profileUrl: profileUrl,
+            status: 'completed'
         });
 
         await wait(actionDelay);
@@ -650,6 +812,8 @@ async function waitAndClickDialogConfirm() {
 
 function complete(message, extraStats = {}) {
     isRunning = false;
+    isPaused = false; // Reset pause state
+    currentSubMode = 'idle';
 
     // Use official LinkedIn count if available, otherwise fallback to loaded buttons
     const linkedInCount = getLinkedInTotalCount();
@@ -800,6 +964,7 @@ function highlightConnection(element, type) {
 
 // Scan all connections and index messages
 async function scanConnections() {
+    currentSubMode = 'scanning';
     updateStatus('Scanning: Starting...', 0);
 
     // Reset found list
@@ -855,16 +1020,39 @@ async function scanConnections() {
             count: g.count
         }));
 
+        // Calculate progress percentage
+        const linkedInTotal = getLinkedInTotalCount() || (buttons.length + 100); // Fallback if 0
+        const progressPct = Math.min(95, Math.ceil((buttons.length / linkedInTotal) * 100));
+
         updateStatus(
-            `Found ${projectCount} distinct message groups (${buttons.length} connections)...`,
-            Math.min(90, 5 + (i * 2)),
+            `Found ${projectCount} distinct groups (${buttons.length}/${linkedInTotal})...`,
+            progressPct,
             null,
             partialResults
         );
 
         if (currentHeight <= previousHeight + 50) { // Tolerance
             noChangeCount++;
-            if (noChangeCount >= 2) break; // Stop if no growth
+
+            // Stricter check: only stop if we're close to the total count or have tried many times
+            const linkedInTotal = getLinkedInTotalCount();
+            const loadedCount = buttons.length;
+            const isCloseEnough = linkedInTotal && loadedCount >= (linkedInTotal - 40); // Within 40 items
+
+            if (isCloseEnough && noChangeCount >= 2) {
+                console.log('ClearConnect: Reached total count, stopping.');
+                break;
+            } else if (noChangeCount >= 5) { // Increased from 2 to 5 for slow connections
+                if (linkedInTotal && loadedCount < (linkedInTotal - 100)) {
+                    // We are stuck but far from total. Try a "jiggle" scroll?
+                    window.scrollBy(0, -500);
+                    await wait(800);
+                    scrollTo(getScrollHeight());
+                } else {
+                    console.log('ClearConnect: Stuck with no growth, stopping.');
+                    break;
+                }
+            }
         } else {
             noChangeCount = 0;
         }
@@ -1002,6 +1190,7 @@ function showConnection(hash) {
 
 // Withdraw selected groups
 async function withdrawSelected(selectedHashes) {
+    currentSubMode = 'withdrawing';
     const targetHashes = new Set(selectedHashes);
     const buttons = findWithdrawButtons(); // Working from existing list (assuming page hasn't changed much, but will verify)
     totalToWithdraw = buttons.length; // Approximate, effective total is matching count
@@ -1030,6 +1219,13 @@ async function withdrawSelected(selectedHashes) {
             const age = getAge(btn);
             const ageText = age ? age.text : '';
 
+            // Safety check
+            if (!isSafe(btn)) {
+                complete(`Safety stop: ${personName} (${ageText}) was too recent... ${processed} older connections cleared.`);
+                isRunning = false;
+                return;
+            }
+
             // Wait if paused
             while (isPaused && isRunning) {
                 await wait(500);
@@ -1051,8 +1247,34 @@ async function withdrawSelected(selectedHashes) {
 
             await wait(300); // Visual delay
 
-            btn.click();
-            const confirmed = await waitAndClickDialogConfirm();
+            let confirmed = false;
+
+            if (debugMode) {
+                // Debug mode: Just highlight, don't click
+                const card = btn.closest('[role="listitem"]');
+                if (card) {
+                    card.style.transition = 'background 0.3s, border 0.3s';
+                    card.style.backgroundColor = '#fff3cd';
+                    card.style.border = '2px solid #ffc107';
+                }
+                btn.style.backgroundColor = '#ffc107';
+                btn.style.color = '#000';
+                btn.style.fontWeight = 'bold';
+
+                await wait(800);
+                confirmed = true;
+
+                // Hide the card after highlighting to simulate withdrawal
+                if (card) {
+                    setTimeout(() => {
+                        card.style.display = 'none';
+                    }, 1000);
+                }
+            } else {
+                // Normal mode: Actually click
+                btn.click();
+                confirmed = await waitAndClickDialogConfirm();
+            }
 
             if (confirmed) {
                 processed++;
@@ -1062,7 +1284,8 @@ async function withdrawSelected(selectedHashes) {
                 await recordWithdrawal(personName, profileUrl, ageText, projectName);
 
                 // Send 'completed' status for queue update
-                updateStatus(`[${processed}/${totalToWithdraw}] Cleared ${personName}`, Math.round((processed / totalToWithdraw) * 100), {
+                const statusPrefix = debugMode ? '[DEBUG] ' : '';
+                updateStatus(`${statusPrefix}[${processed}/${totalToWithdraw}] Cleared ${personName}`, Math.round((processed / totalToWithdraw) * 100), {
                     name: personName,
                     age: ageText,
                     status: 'completed'

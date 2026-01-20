@@ -147,7 +147,7 @@
             <h2 id="active-operation-title" class="section-title">Clearing connections...</h2>
 
             <!-- COUNT / AGE PROGRESS LAYOUT -->
-            <div id="progress-layout-standard">
+            <div id="progress-layout-standard" style="display:none;">
                 <!-- Load/Scroll Step -->
                 <div id="step-scroll" class="progress-step active">
                     <div class="step-header">
@@ -189,41 +189,37 @@
             <div id="progress-layout-message" style="display:none;">
                 <!-- Scanning State -->
                 <div id="msg-step-scan" class="progress-step active">
-                    <h3 class="pulsating-text">Scanning...</h3>
-                    <div class="progress-bar-bg">
-                        <div id="msg-scan-fill" class="progress-bar-fill"></div>
+                    <div class="step-header">
+                        <span class="step-num">1</span>
+                        <span class="step-label wave-text">Scanning...</span>
                     </div>
-                    <p id="msg-scan-status" class="status-text">Found 0 unique messages.</p>
+                    <div class="step-content">
+                        <div class="progress-bar-bg">
+                            <div id="msg-scan-fill" class="progress-bar-fill"></div>
+                        </div>
+                        <p id="msg-scan-status" class="status-text">Found 0 unique messages.</p>
+                    </div>
                 </div>
 
                 <!-- Withdrawing State -->
                 <div id="msg-step-withdraw" class="progress-step" style="display:none;">
-                    <h3>Withdrawing...</h3>
-                    <div class="progress-bar-bg">
-                        <div id="msg-withdraw-fill" class="progress-bar-fill"></div>
+                    <div class="step-header">
+                        <span class="step-num">2</span>
+                        <span class="step-label">Withdrawing...</span>
                     </div>
-                    <p id="msg-withdraw-status" class="status-text">Preparing...</p>
+                    <div class="step-content">
+                        <div class="progress-bar-bg">
+                            <div id="msg-withdraw-fill" class="progress-bar-fill"></div>
+                        </div>
+                        <p id="msg-withdraw-status" class="status-text">Preparing...</p>
+                    </div>
                 </div>
             </div>
 
-            <!-- Withdrawal Queue (shows who will be/is being withdrawn) -->
-            <div id="live-withdrawal-log" class="live-results-section" style="display:none;">
-                <h3 class="live-results-header">Removal Queue:</h3>
-                <div id="withdrawal-log-list" class="withdrawal-queue" style="max-height: 200px; overflow-y: auto;">
-                    <!-- Populated dynamically with queue items -->
-                </div>
-            </div>
-
-            <!-- Live Scan Results (visible during scanning) -->
-            <div id="live-scan-results" class="live-results-section" style="display:none;">
-                <h3 class="live-results-header">Found Groups:</h3>
-                <div id="live-results-list" class="live-results-list"></div>
-            </div>
-
-            <!-- Matches List (for message mode - scrollable, collapsible) -->
+            <!-- Unified Removal Queue / Matches List -->
             <div id="matches-list-section" class="matches-list-section" style="display:none;">
                 <div class="matches-header">
-                    <span class="matches-label">Matching connections</span>
+                    <span id="matches-label" class="matches-label">Removal Queue</span>
                     <button id="matches-toggle" type="button" class="matches-toggle" title="Toggle list">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2">
@@ -261,9 +257,23 @@
             </div>
 
             <!-- Action Buttons -->
-            <div class="progress-actions">
-                <button id="pause-btn" class="secondary-btn" style="display:none;">Pause</button>
-                <button id="stop-btn" class="secondary-btn">Stop</button>
+            <div class="progress-actions" style="display: flex; gap: 8px; margin-top: 12px;">
+                <button id="pause-btn" class="secondary-btn" style="display:none; flex: 1;">
+                    <span class="btn-text">Pause</span>
+                    <svg class="btn-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2"
+                        style="display:none; animation: spin 1s linear infinite;">
+                        <circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="32"></circle>
+                    </svg>
+                </button>
+                <button id="stop-btn" class="secondary-btn" style="flex: 1;">
+                    <span class="btn-text">Stop</span>
+                    <svg class="btn-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2"
+                        style="display:none; animation: spin 1s linear infinite;">
+                        <circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="32"></circle>
+                    </svg>
+                </button>
             </div>
 
             <!-- Inline Stats (hidden initially, fades in on complete) -->
@@ -470,6 +480,18 @@
                         <option value="week">weeks</option>
                     </select>
                 </div>
+            </div>
+
+            <!-- Debug Mode -->
+            <div class="setting-option">
+                <label>
+                    <input type="checkbox" id="debug-mode-toggle">
+                    <span class="option-text">
+                        <strong>Debug Mode</strong>
+                        <small>Simulates withdrawals without actually removing connections (highlights buttons
+                            only)</small>
+                    </span>
+                </label>
             </div>
 
             <!-- Advanced Setting Removed -->
