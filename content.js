@@ -1,93 +1,228 @@
-let isRunning = false;
-let processedCount = 0;
-let targetCount = 0;
-let currentMode = 'count';
-let ageValue = 3;
-let ageUnit = 'month';
-let safeMode = true;
-let safeThreshold = 1;
-let safeUnit = 'month';
-let currentStatusText = "Ready";
-let currentProgress = 0;
-let currentSubMode = 'idle'; // 'scanning', 'withdrawing', 'idle'
-let oldestCleared = '-';
-let actionDelay = 600;
-let totalToWithdraw = 0;
-let messagePatterns = []; // For message mode filtering
-let debugMode = false; // Debug mode - simulates withdrawals without clicking
+// Central State Source of Truth
+const state = {
+    isRunning: false,
+    isPaused: false,
+    currentMode: 'count', // 'count' | 'age' | 'message'
+    subMode: 'idle',      // 'scanning' | 'withdrawing' | 'idle'
+    lastError: null,      // For persisting error messages on stop
+    stats: {
+        processed: 0,
+        total: 0,
+        oldestCleared: '-',
+        startTime: null,
+        pendingInvitations: null,     // Live count from LinkedIn page
+        pendingUpdatedAt: null,       // Timestamp of last update
+        alltimeCleared: 0             // Total connections ever cleared
+    },
+    foundMatchingPeople: [], // Persisted list of found people for Queue/Results
+    batchStart: 0,           // Index where the current batch starts (for queue display)
+    settings: {
+        targetCount: 0,
+        ageValue: 3,
+        ageUnit: 'month',
+        safeMode: true,
+        safeThreshold: 1,
+        safeUnit: 'month',
+        messagePatterns: [],
+        debugMode: false
+    },
+    status: {
+        text: "Ready",
+        progress: 0
+    },
+    sessionLog: [], // Local history for UI hydration [{name, age, status, timestamp}]
+    uiNavigation: {
+        currentTab: 'home' // 'home' | 'progress' | 'settings' | 'history' | 'wrongPage' | 'scanResults' | 'completed'
+    },
+    lastRunResult: null, // { processed, oldestCleared, timestamp } - persists until new run starts
+    sessionCleared: []   // Accumulates ALL cleared people across "Continue" runs in a session
+};
 
-// Dynamic timing
+// Runtime execution variables (reset on start, not necessary for UI persistence)
+let actionDelay = 600;
 let baseWait = 300;
 let retryCount = 0;
 let scrollContainer = null;
-let isPaused = false;
+// foundMatchingPeople moved to state.foundMatchingPeople
+
+// Save state to chrome.storage.local (source of truth)
+async function saveState() {
+    try {
+        await chrome.storage.local.set({ extension_state: state });
+    } catch (e) {
+        console.error('ClearConnect: Failed to save state', e);
+    }
+}
+
+// Broadcast state to popup (for real-time UI updates)
+function broadcastState(eventType = 'STATE_UPDATE') {
+    chrome.runtime.sendMessage({
+        action: eventType,
+        state: state
+    }).catch(() => {
+        // Popup might be closed, ignore error
+    });
+    saveState();
+}
+
+// Restore state from storage on script load (for resuming interrupted operations)
+(async function initState() {
+    try {
+        const { extension_state, alltimeCleared: legacyCleared } = await chrome.storage.local.get(['extension_state', 'alltimeCleared']);
+        if (extension_state) {
+            // Merge stored state into current state
+            Object.assign(state, extension_state);
+
+            // Migrate legacy alltimeCleared if it exists and state doesn't have it
+            if (legacyCleared && !state.stats.alltimeCleared) {
+                state.stats.alltimeCleared = legacyCleared;
+            }
+
+            // If we were running when page was reloaded, mark as stopped
+            if (state.isRunning) {
+                state.isRunning = false;
+                state.subMode = 'idle';
+                state.lastError = 'Page was reloaded. Operation stopped.';
+            }
+        }
+
+        // Always update pending count on page load if we can read it
+        const liveCount = getLinkedInTotalCount();
+        if (liveCount !== null) {
+            state.stats.pendingInvitations = liveCount;
+            state.stats.pendingUpdatedAt = Date.now();
+        }
+
+        await saveState();
+    } catch (e) {
+        console.error('ClearConnect: Failed to restore state', e);
+    }
+})();
+
 
 // Listen for messages
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'START_WITHDRAW') {
-        if (isRunning) return;
-        targetCount = message.count || 999999;
-        currentMode = message.mode || 'count';
-        ageValue = message.ageValue || 3;
-        ageUnit = message.ageUnit || 'month';
-        safeMode = message.safeMode !== false;
-        safeThreshold = message.safeThreshold || 1;
-        safeUnit = message.safeUnit || 'month';
-        messagePatterns = message.messages || [];
-        debugMode = message.debugMode === true;
-        processedCount = 0;
-        oldestCleared = '-';
-        totalToWithdraw = 0;
-        isRunning = true;
+        if (state.isRunning) return;
+
+        // Batch Start Logic: Track where this new run begins relative to history
+        // If continuing, we want to slice the queue from here.
+        // Batch Start Logic: Track where this new run begins relative to history
+        // If continuing, we want to slice the queue from here.
+        state.batchStart = state.stats.processed || 0;
+
+        // CRITICAL FIX: clear pending items from previous run to force fresh scan
+        // This ensures "Continue" finds the CORRECT people from current view
+        if (state.foundMatchingPeople && state.foundMatchingPeople.length > 0) {
+            state.foundMatchingPeople = state.foundMatchingPeople.filter(p => p.cleared === true);
+            // After clearing pending, batchStart should align with the end of cleared list
+            // Just double check:
+            state.batchStart = state.foundMatchingPeople.length;
+        }
+
+        // Reset State
+        state.isRunning = true;
+        state.isPaused = false;
+        state.currentMode = message.mode || 'count';
+        // Immediate Mode Support (User requested "direct to withdrawing")
+        const isImmediate = message.immediate === true;
+        state.subMode = isImmediate ? 'withdrawing' : 'scanning';
+        state.lastError = null;
+
+        state.settings.targetCount = message.count || 999999;
+        state.settings.ageValue = message.ageValue || 3;
+        state.settings.ageUnit = message.ageUnit || 'month';
+        state.settings.safeMode = message.safeMode !== false;
+        state.settings.safeThreshold = message.safeThreshold || 1;
+        state.settings.safeUnit = message.safeUnit || 'month';
+        state.settings.messagePatterns = message.messages || [];
+        state.settings.debugMode = message.debugMode === true;
+
+        state.stats.processed = 0;
+        state.stats.total = 0; // Will be determined
+        state.stats.oldestCleared = '-';
+        state.stats.startTime = Date.now();
+
+        state.status.text = "Starting...";
+        state.status.progress = 0;
+        state.sessionLog = []; // Reset log on new run? Or keep? Reset for new run seems safer.
+        state.lastRunResult = null; // Clear previous run result when starting new run
+
+        if (!isImmediate) {
+            state.sessionCleared = []; // New session: Clear history
+        }
+        // else: Keep sessionCleared to append new results
+
+        // specific resets
         retryCount = 0;
         baseWait = 300;
         scrollContainer = null;
-        startProcess();
+
+        // Save state and start
+        saveState();
+        startProcess(isImmediate);
+
     } else if (message.action === 'STOP_WITHDRAW') {
-        // Trigger completion with specific message
-        const msg = processedCount > 0 ? `Stopped by user, ${processedCount} withdrawn.` : 'Stopped by user.';
-        complete(msg);
+        const msg = state.stats.processed > 0 ?
+            `Stopped by user, ${state.stats.processed} withdrawn.` :
+            'Stopped by user.';
+        complete(msg, {}, 'manual');
+
     } else if (message.action === 'GET_STATUS') {
-        sendResponse({
-            isRunning: isRunning,
-            statusText: currentStatusText,
-            progress: currentProgress,
-            target: targetCount,
-            subMode: currentSubMode,
-            mode: currentMode
-        });
+        // Return full state for hydration
+        sendResponse(state);
+
     } else if (message.action === 'GET_COUNT') {
-        // Quick count retrieval
         const countEl = document.querySelector('.mn-invitations-preview__header .t-black--light');
         const count = countEl ? parseInt(countEl.innerText.replace(/[^0-9]/g, '')) : 0;
         sendResponse({ count });
+
     } else if (message.action === 'PAUSE_WITHDRAW') {
-        isPaused = true;
-        updateStatus('Paused', currentProgress);
+        state.isPaused = true;
+        updateStatus('Paused', state.status.progress);
+
     } else if (message.action === 'RESUME_WITHDRAW') {
-        isPaused = false;
-        updateStatus('Resuming...', currentProgress);
+        state.isPaused = false;
+        updateStatus('Resuming...', state.status.progress);
+
     } else if (message.action === 'UPDATE_MESSAGES') {
-        messagePatterns = message.messages || [];
-        foundMatchingPeople = []; // Reset found list
-        isPaused = false;
-        updateStatus('Resuming with updated patterns...', currentProgress);
+        state.settings.messagePatterns = message.messages || [];
+        state.foundMatchingPeople = [];
+        state.isPaused = false;
+        updateStatus('Resuming with updated patterns...', state.status.progress);
+
     } else if (message.action === 'SCAN_CONNECTIONS') {
-        if (isRunning) return;
-        isRunning = true;
-        currentMode = 'message'; // Ensure mode is set for GET_STATUS
+        if (state.isRunning) return;
+        state.isRunning = true;
+        state.currentMode = 'message';
+        state.subMode = 'scanning';
+        state.sessionLog = []; // Reset log
+        saveState();
         scanConnections();
+
     } else if (message.action === 'WITHDRAW_SELECTED') {
-        if (isRunning) return;
-        isRunning = true;
-        currentMode = 'message'; // Message mode withdrawal
-        debugMode = message.debugMode === true;
-        safeMode = message.safeMode !== false;
-        safeThreshold = message.safeThreshold !== undefined ? message.safeThreshold : 1;
-        safeUnit = message.safeUnit || 'month';
+        if (state.isRunning) return;
+        state.isRunning = true;
+        state.currentMode = 'message';
+        state.subMode = 'withdrawing';
+
+        state.settings.debugMode = message.debugMode === true;
+        state.settings.safeMode = message.safeMode !== false;
+        state.settings.safeThreshold = message.safeThreshold !== undefined ? message.safeThreshold : 1;
+        state.settings.safeUnit = message.safeUnit || 'month';
+
+        state.sessionLog = []; // Reset log
+        saveState();
         withdrawSelected(message.selectedHashes);
+
     } else if (message.action === 'SHOW_CONNECTION') {
         showConnection(message.hash);
+
+    } else if (message.action === 'GET_PENDING_COUNT') {
+        // Return the current pending count from the page
+        const count = getLinkedInTotalCount();
+        sendResponse({ count: count });
+        return true; // Keep channel open for async response
     }
 });
 
@@ -133,20 +268,20 @@ function getConnectionMessage(btn) {
 }
 
 // Track found matching people during scroll
-let foundMatchingPeople = [];
+// function normalizeMessage(text) { ... } removed in favor of more complex version below
 
 // function normalizeMessage(text) { ... } removed in favor of more complex version below
 
 // Check if connection matches any message pattern
 function matchesMessagePattern(btn) {
-    if (messagePatterns.length === 0) return false;
+    if (state.settings.messagePatterns.length === 0) return false;
     const msg = getConnectionMessage(btn);
     if (!msg) return false;
 
     // Normalize both the message and patterns for comparison
     const normalizedMsg = normalizeMessage(msg);
 
-    return messagePatterns.some(pattern => {
+    return state.settings.messagePatterns.some(pattern => {
         const normalizedPattern = normalizeMessage(pattern);
         // Match if normalized message contains normalized pattern
         // Or if original message contains original pattern (for non-greeting patterns)
@@ -202,23 +337,35 @@ function isAtScrollBottom() {
     return window.scrollY + window.innerHeight >= document.body.scrollHeight - 50;
 }
 
-async function startProcess() {
+async function startProcess(isImmediate = false) {
     scrollContainer = findScrollContainer();
     console.log('ClearConnect: Scroll container', scrollContainer ? 'found' : 'using window');
 
-    updateStatus('Scrolling to bottom...', 0);
+    if (!isImmediate) {
+        updateStatus('Scrolling to bottom...', 0);
+        await scrollToBottom();
+    } else {
+        console.log('ClearConnect: Immediate mode - Skipping scroll');
+    }
 
     // Reset scan state
     scannedUrns.clear();
     lastScannedIndex = 0;
+    // Reset found list for new run (Queue shows current batch only)
+    state.foundMatchingPeople = [];
+    state.batchStart = 0;
+    // Reset Processed count for this run (Stats tracks run progress)
+    state.stats.processed = 0;
 
-    await scrollToBottom();
-
-    if (isRunning) {
+    if (state.isRunning) {
         // Pre-scan for targets (Final sweep / Count Mode)
-        if (currentMode === 'count' || currentMode === 'age') {
+        if (state.currentMode === 'count' || state.currentMode === 'age') {
             await scanForTargets();
         }
+        // Transition to withdrawal phase
+        state.subMode = 'withdrawing';
+        broadcastState('PHASE_CHANGE');
+
         processNext();
     }
 }
@@ -227,7 +374,7 @@ let scannedUrns = new Set();
 let lastScannedIndex = 0;
 
 async function scanVisibleAgeTargets(buttons) {
-    if (currentMode !== 'age') return;
+    if (state.currentMode !== 'age') return;
 
     const targets = [];
     // Iterate new buttons only
@@ -278,41 +425,64 @@ async function scanForTargets() {
         const urn = getProfileUrl(btn) || getPersonName(btn);
 
         // Count Limit check
-        if (currentMode === 'count' && targets.length >= targetCount) break;
+        if (state.currentMode === 'count' && targets.length >= state.settings.targetCount) break;
 
         // Safety check (too recent)
         if (!isSafe(btn)) break;
 
         // Age Limit check (too young)
-        if (currentMode === 'age' && shouldStop(btn)) break;
+        if (state.currentMode === 'age' && shouldStop(btn)) break;
 
         // Skip if already scanned
-        if (scannedUrns.has(urn) && currentMode === 'age') continue;
+        if (scannedUrns.has(urn) && state.currentMode === 'age') continue;
 
         // Add to targets
         const personName = getPersonName(btn);
         const age = getAge(btn);
 
-        targets.push({
+        // PERSISTENCE FIX: Add to global state instantly
+        // This ensures Queue List is populated even if popup reopens
+        const targetObj = {
             name: personName,
             age: age ? age.text : '',
             status: 'pending'
-        });
+        };
 
-        if (currentMode === 'age') scannedUrns.add(urn);
+        targets.push(targetObj);
+
+        // Add to foundMatchingPeople to populate UI lists
+        if (!state.foundMatchingPeople.some(p => p.name === personName)) {
+            state.foundMatchingPeople.push({
+                name: personName,
+                age: age ? `${age.value} ${age.unit}${age.value > 1 ? 's' : ''}` : '-',
+                cleared: false
+            });
+        }
+
+        if (state.currentMode === 'age') scannedUrns.add(urn);
     }
 
-    // Send batch to Popup
+    // Save state after scanning to persist the list
+    // UPDATE TOTAL for immediate mode so UI knows [1/Total]
+    state.stats.total = targets.length;
+
+    // For Age mode, update targetCount setting so progress bars work
+    if (state.currentMode === 'age') {
+        state.settings.targetCount = targets.length;
+    }
+
+    saveState();
+
+    // Send batch to Popup (still useful for immediate update if open)
     if (targets.length > 0) {
         try {
             chrome.runtime.sendMessage({
                 action: 'POPULATE_QUEUE',
                 targets: targets,
-                prepend: false // Append for Bottom-Up
+                prepend: false,
+                total: targets.length // Explicitly send total
             });
-        } catch (e) {
-            // Popup might be closed, irrelevant
-        }
+        } catch (e) { }
     }
 }
 
@@ -328,11 +498,11 @@ async function scrollToBottom() {
     // Send initial scroll progress
     sendScrollProgress(0, linkedInTotal);
 
-    while (isRunning && noChange < maxRetries) {
+    while (state.isRunning && noChange < maxRetries) {
         const buttons = findWithdrawButtons();
 
         // Progressive Scan for Age Mode
-        if (currentMode === 'age') {
+        if (state.currentMode === 'age') {
             scanVisibleAgeTargets(buttons);
         }
 
@@ -341,7 +511,7 @@ async function scrollToBottom() {
 
         // Calculate matching count for Age mode
         let matchCount = 0;
-        if (currentMode === 'age') {
+        if (state.currentMode === 'age') {
             // Scan backwards from end for efficiency (assuming sorting)
             for (let i = buttons.length - 1; i >= 0; i--) {
                 const btn = buttons[i];
@@ -357,10 +527,13 @@ async function scrollToBottom() {
                     else if (age.unit === 'day') connectionAgeDays = age.value;
 
                     let thresholdDays = 0;
-                    if (ageUnit === 'year') thresholdDays = ageValue * 365;
-                    else if (ageUnit === 'month') thresholdDays = ageValue * 30;
-                    else if (ageUnit === 'week') thresholdDays = ageValue * 7;
-                    else if (ageUnit === 'day') thresholdDays = ageValue;
+                    let ageVal = state.settings.ageValue;
+                    let ageUnt = state.settings.ageUnit;
+
+                    if (ageUnt === 'year') thresholdDays = ageVal * 365;
+                    else if (ageUnt === 'month') thresholdDays = ageVal * 30;
+                    else if (ageUnt === 'week') thresholdDays = ageVal * 7;
+                    else if (ageUnt === 'day') thresholdDays = ageVal;
 
                     if (connectionAgeDays >= thresholdDays) {
                         matchCount++;
@@ -378,10 +551,11 @@ async function scrollToBottom() {
                     break;
                 }
             }
-            totalToWithdraw = matchCount;
-        } else if (currentMode === 'message') {
+            state.stats.total = matchCount;
+        } else if (state.currentMode === 'message') {
             // Count matching messages and track found people with age data
-            foundMatchingPeople = [];
+            // Count matching messages and track found people with age data
+            state.foundMatchingPeople = [];
             for (const btn of buttons) {
                 if (matchesMessagePattern(btn)) {
                     matchCount++;
@@ -390,14 +564,15 @@ async function scrollToBottom() {
                     const ageText = age ? `${age.value} ${age.unit}${age.value > 1 ? 's' : ''}` : '-';
 
                     // Track matching person with full data (avoid duplicates by name)
-                    if (name && !foundMatchingPeople.some(p => p.name === name)) {
-                        foundMatchingPeople.push({ name, age: ageText, cleared: false });
+                    if (name && !state.foundMatchingPeople.some(p => p.name === name)) {
+                        state.foundMatchingPeople.push({ name, age: ageText, cleared: false });
                     }
                 }
             }
-            totalToWithdraw = matchCount;
+            state.stats.total = matchCount;
+            saveState(); // Persist the found people!
         } else {
-            totalToWithdraw = targetCount;
+            state.stats.total = state.settings.targetCount;
         }
 
         // Simple scroll to bottom
@@ -422,10 +597,10 @@ async function scrollToBottom() {
             baseWait = Math.max(200, baseWait - 30); // Speed up when loading
 
             let msg = `Loading... (${currentCount}/~${linkedInTotal})`;
-            if (currentMode === 'age') {
-                const unitLabel = ageValue === 1 ? ageUnit : ageUnit + 's';
-                msg = `Found ${matchCount} sent ${ageValue} ${unitLabel} ago and older`;
-            } else if (currentMode === 'message') {
+            if (state.currentMode === 'age') {
+                const unitLabel = state.settings.ageValue === 1 ? state.settings.ageUnit : state.settings.ageUnit + 's';
+                msg = `Found ${matchCount} sent ${state.settings.ageValue} ${unitLabel} ago and older`;
+            } else if (state.currentMode === 'message') {
                 msg = `Found ${matchCount} matching message${matchCount !== 1 ? 's' : ''}`;
             }
             sendScrollProgress(currentCount, linkedInTotal, msg);
@@ -498,7 +673,7 @@ function sendScrollProgress(found, total, text) {
         found: found,
         total: total,
         text: text || `Found ${found} of ~${total}`,
-        foundMatches: currentMode === 'message' ? foundMatchingPeople.slice(0, 50) : [] // Limit to 50
+        foundMatches: state.currentMode === 'message' ? state.foundMatchingPeople.slice(0, 50) : [] // Limit to 50
     });
 }
 
@@ -512,7 +687,9 @@ function findWithdrawButtons() {
         });
     }
 
-    return buttons;
+    // Filter out already processed items (Debug Mode & Loop Prevention)
+    // Check both button and closest container
+    return buttons.filter(b => !b.classList.contains('cc-processed') && !b.closest('.cc-processed'));
 }
 
 function getPersonName(button) {
@@ -602,7 +779,7 @@ function getAge(button) {
 
 function isSafe(button) {
     // If safe mode is disabled, everything is safe
-    if (!safeMode) return true;
+    if (!state.settings.safeMode) return true;
 
     const age = getAge(button);
     if (!age) return false;
@@ -611,15 +788,19 @@ function isSafe(button) {
     if (age.unit === 'year') ageInMonths = age.value * 12;
     else if (age.unit === 'month') ageInMonths = age.value;
     else if (age.unit === 'week') ageInMonths = age.value / 4;
-    else return false;
+    else if (age.unit === 'day') ageInMonths = age.value / 30;
+    else return true; // hour/minute/second = very recent, always safe (too new to withdraw)
 
-    const thresholdMonths = safeUnit === 'month' ? safeThreshold : safeThreshold / 4;
+    let thresholdMonths = 0;
+    if (state.settings.safeUnit === 'month') thresholdMonths = state.settings.safeThreshold;
+    else if (state.settings.safeUnit === 'week') thresholdMonths = state.settings.safeThreshold / 4;
+    else if (state.settings.safeUnit === 'day') thresholdMonths = state.settings.safeThreshold / 30;
     return ageInMonths > thresholdMonths;
 }
 
 function shouldStop(button) {
-    if (currentMode === 'count') {
-        return processedCount >= targetCount;
+    if (state.currentMode === 'count') {
+        return state.stats.processed >= state.settings.targetCount;
     } else {
         const age = getAge(button);
         if (!age) return true;
@@ -635,10 +816,13 @@ function shouldStop(button) {
 
         // Convert threshold to days
         let thresholdDays = 0;
-        if (ageUnit === 'year') thresholdDays = ageValue * 365;
-        else if (ageUnit === 'month') thresholdDays = ageValue * 30;
-        else if (ageUnit === 'week') thresholdDays = ageValue * 7;
-        else if (ageUnit === 'day') thresholdDays = ageValue;
+        let ageVal = state.settings.ageValue;
+        let ageUnt = state.settings.ageUnit;
+
+        if (ageUnt === 'year') thresholdDays = ageVal * 365;
+        else if (ageUnt === 'month') thresholdDays = ageVal * 30;
+        else if (ageUnt === 'week') thresholdDays = ageVal * 7;
+        else if (ageUnt === 'day') thresholdDays = ageVal;
 
         // Stop if connection is newer than threshold (fewer days old)
         return connectionAgeDays < thresholdDays;
@@ -646,18 +830,18 @@ function shouldStop(button) {
 }
 
 async function processNext() {
-    if (!isRunning) return;
+    if (!state.isRunning) return;
 
     const buttons = findWithdrawButtons();
 
     if (buttons.length === 0) {
-        complete('No withdraw buttons found.');
+        complete('No withdraw buttons found.', {}, 'error');
         return;
     }
 
     // For message mode, find a matching button from bottom (oldest)
     let btn;
-    if (currentMode === 'message') {
+    if (state.currentMode === 'message') {
         // Scan from bottom to find first matching message
         for (let i = buttons.length - 1; i >= 0; i--) {
             if (matchesMessagePattern(buttons[i])) {
@@ -666,10 +850,10 @@ async function processNext() {
             }
         }
         if (!btn) {
-            if (processedCount === 0) {
-                complete('No connections found matching your message patterns.');
+            if (state.stats.processed === 0) {
+                complete('No connections found matching your message patterns.', {}, 'success');
             } else {
-                complete(`Done! Cleared all ${processedCount} matching connections.`);
+                complete(`Done! Cleared all ${state.stats.processed} matching connections.`);
             }
             return;
         }
@@ -681,36 +865,36 @@ async function processNext() {
     const age = getAge(btn);
     const ageText = age ? (age.text || `Sent ${age.value} ${age.unit}${age.value > 1 ? 's' : ''} ago`) : 'unknown';
 
-    if (currentMode === 'count' && processedCount >= targetCount) {
+    if (state.currentMode === 'count' && state.stats.processed >= state.settings.targetCount) {
         complete();
         return;
     }
 
     if (!isSafe(btn)) {
-        complete(`Safety stop: ${personName} (${ageText}) is too recent.`);
+        complete(`Safety stop: ${personName} (${ageText}) is too recent.`, {}, 'safety');
         return;
     }
 
     // Wait if paused
-    while (isPaused && isRunning) {
+    while (state.isPaused && state.isRunning) {
         await wait(500);
     }
-    if (!isRunning) return;
+    if (!state.isRunning) return;
 
-    if (currentMode === 'age' && shouldStop(btn)) {
-        if (processedCount === 0) {
-            const unitLabel = ageValue === 1 ? ageUnit : ageUnit + 's';
-            complete(`No connections sent ${ageValue} ${unitLabel} ago and older. Oldest is ${ageText}.`, { oldestRemaining: age });
+    if (state.currentMode === 'age' && shouldStop(btn)) {
+        if (state.stats.processed === 0) {
+            const unitLabel = state.settings.ageValue === 1 ? state.settings.ageUnit : state.settings.ageUnit + 's';
+            complete(`No connections sent ${state.settings.ageValue} ${unitLabel} ago and older. Oldest is ${ageText}.`, { oldestRemaining: age }, 'success');
         } else {
-            complete(`Age limit reached at ${personName} (${ageText}).`, { oldestRemaining: age });
+            complete(`Age limit reached at ${personName} (${ageText}).`, { oldestRemaining: age }, 'success');
         }
         return;
     }
 
-    const total = totalToWithdraw > 0 ? totalToWithdraw : 0;
-    const progressPct = total > 0 ? Math.round((processedCount / total) * 100) : 0;
+    const total = state.stats.total > 0 ? state.stats.total : 0;
+    const progressPct = total > 0 ? Math.round((state.stats.processed / total) * 100) : 0;
 
-    updateStatus(`[${processedCount + 1}/${total || '?'}] ${personName}`, progressPct, {
+    updateStatus(`[${state.stats.processed + 1}/${total || '?'}] ${personName}`, progressPct, {
         name: personName,
         age: ageText,
         status: 'active'
@@ -721,12 +905,14 @@ async function processNext() {
 
     let confirmed = false;
 
-    if (debugMode) {
+    if (state.settings.debugMode) {
         // Debug mode: Just highlight the button, don't click
-        const card = btn.closest('[role="listitem"]');
+        const card = btn.closest('.invitation-card__container') || btn.closest('li');
+
+        // Highlight active processing
         if (card) {
             card.style.transition = 'background 0.3s, border 0.3s';
-            card.style.backgroundColor = '#fff3cd';
+            card.style.backgroundColor = '#fff3cd'; // Yellow processing
             card.style.border = '2px solid #ffc107';
         }
         btn.style.transition = 'all 0.3s';
@@ -734,16 +920,26 @@ async function processNext() {
         btn.style.color = '#000';
         btn.style.fontWeight = 'bold';
 
-        await wait(800); // Simulate processing time
+        await wait(1500); // Simulate processing time (Slower for visibility)
         confirmed = true; // Pretend it was successful
 
-        // Hide the card after highlighting to simulate withdrawal
-        // This prevents the same button from being processed again
+        // Mark as processed (Red) instead of hiding
+        // This allows findWithdrawButtons to filter it out, moving the "cursor" up
         if (card) {
-            setTimeout(() => {
-                card.style.display = 'none';
-            }, 1000);
+            card.classList.add('cc-processed');
+            card.style.backgroundColor = '#fee2e2'; // Red/Pink processed
+            card.style.border = '1px solid #e5e7eb'; // Reset border
+            card.style.opacity = '0.6';
         }
+        btn.classList.add('cc-processed'); // Mark button directly too
+        btn.style.backgroundColor = '#ef4444'; // Red button
+        btn.style.color = 'white';
+        btn.innerText = 'Debug Cleared';
+
+        // NOTE: We do NOT increment state.stats.processed here
+        // We let the shared 'if (confirmed)' block handle it below
+        // ensuring parity with Real Mode.
+
     } else {
         // Normal mode: Actually click the button
         btn.click();
@@ -751,8 +947,8 @@ async function processNext() {
     }
 
     if (confirmed) {
-        processedCount++;
-        oldestCleared = ageText;
+        state.stats.processed++;
+        state.stats.oldestCleared = ageText;
         retryCount = 0;
 
         // Get profile URL for history
@@ -762,9 +958,9 @@ async function processNext() {
         await recordWithdrawal(personName, profileUrl, ageText);
 
         // Send status with full cleared data for UI update
-        const progressPctAfter = totalToWithdraw > 0 ? Math.round((processedCount / totalToWithdraw) * 100) : 0;
-        const statusPrefix = debugMode ? '[DEBUG] ' : '';
-        updateStatus(`${statusPrefix}[${processedCount}/${totalToWithdraw || '?'}] Cleared ${personName}`, progressPctAfter, {
+        const progressPctAfter = total > 0 ? Math.round((state.stats.processed / total) * 100) : 0;
+        const statusPrefix = state.settings.debugMode ? '[DEBUG] ' : '';
+        updateStatus(`${statusPrefix}[${state.stats.processed}/${total || '?'}] Cleared ${personName}`, progressPctAfter, {
             name: personName,
             age: ageText,
             profileUrl: profileUrl,
@@ -776,10 +972,10 @@ async function processNext() {
     } else {
         retryCount++;
         if (retryCount >= 5) {
-            complete('Error: Could not confirm withdrawal. Selectors may need updating.');
+            complete('Error: Could not confirm withdrawal. Selectors may need updating.', {}, 'error');
             return;
         }
-        updateStatus(`Retrying ${personName}...`, currentProgress);
+        updateStatus(`Retrying ${personName}...`, state.status.progress);
         await wait(800);
         processNext();
     }
@@ -810,42 +1006,110 @@ async function waitAndClickDialogConfirm() {
     return false;
 }
 
-function complete(message, extraStats = {}) {
-    isRunning = false;
-    isPaused = false; // Reset pause state
-    currentSubMode = 'idle';
+function complete(message, extraStats = {}, stopType = 'success') {
+    state.isRunning = false;
+    state.isPaused = false;
+    state.subMode = 'idle';
 
     // Use official LinkedIn count if available, otherwise fallback to loaded buttons
     const linkedInCount = getLinkedInTotalCount();
     const remaining = linkedInCount !== null ? linkedInCount : findWithdrawButtons().length;
 
-    chrome.runtime.sendMessage({
-        action: 'COMPLETED',
-        stats: {
-            cleared: processedCount,
-            oldest: oldestCleared,
-            remaining: remaining,
-            ...extraStats
-        },
-        message: message
-    }).catch(() => { });
+    // Update final stats
+    state.stats.remaining = remaining;
+    if (extraStats.oldestRemaining) {
+        state.stats.oldestRemaining = extraStats.oldestRemaining; // Add to state if needed
+    }
 
-    updateStatus(message || `Done! Cleared ${processedCount}.`, 100);
+    state.status.text = message || `Done! Cleared ${state.stats.processed}.`;
+
+    const resultMsg = message || `Done! Cleared ${state.stats.processed} connections.`;
+
+    // Final State to Send (Crucial for Results Page)
+    // Make sure sessionCleared is up to date
+    const finalState = {
+        ...state,
+        uiNavigation: {
+            ...state.uiNavigation,
+            currentTab: 'completed' // FORCE completed tab in payload
+        },
+        lastRunResult: {
+            processed: state.stats.processed,
+            oldestCleared: state.stats.oldestCleared,
+            timestamp: Date.now(),
+            stopType: stopType,
+            message: resultMsg
+        }
+    };
+    state.lastRunResult = finalState.lastRunResult;
+    // We already set this logic below, but setting it in 'finalState' ensures
+    // the UI receives the correct navigation instruction immediately.
+
+    saveState();
+
+    try {
+        chrome.runtime.sendMessage({
+            action: 'COMPLETE',
+            result: finalState.lastRunResult,
+            state: finalState // Send full state WITH currentTab='completed'
+        });
+    } catch (e) { }
+
+    // Navigate to completed/results view
+    state.uiNavigation = state.uiNavigation || {};
+    state.uiNavigation.currentTab = 'completed';
+
+    // Persist completed state to storage
+    saveState();
 }
 
 function updateStatus(text, progress, clearedData = null, partialResults = null) {
-    currentStatusText = text;
-    currentProgress = progress;
+    state.status.text = text;
+    state.status.progress = progress;
+
+    // Add to session log if we have cleared data
+    if (clearedData) {
+        // Only add if "active" or "completed" logic matches what we want to show
+        // We want to keep a history of "active" -> "completed" transitions
+        // For simple log, just pushing the object is fine.
+
+        // Check if item already exists to update status?
+        const existingIdx = state.sessionLog.findIndex(i => i.name === clearedData.name);
+        if (existingIdx > -1) {
+            state.sessionLog[existingIdx] = { ...state.sessionLog[existingIdx], ...clearedData };
+        } else {
+            state.sessionLog.push({ ...clearedData, timestamp: Date.now() });
+
+            // Increment alltimeCleared for new withdrawals
+            state.stats.alltimeCleared = (state.stats.alltimeCleared || 0) + 1;
+
+            // Add to sessionCleared for persistent Results list
+            if (!state.sessionCleared) state.sessionCleared = [];
+            state.sessionCleared.push(clearedData);
+        }
+
+        // Limit log size (keep last 50)
+        if (state.sessionLog.length > 50) {
+            state.sessionLog.shift();
+        }
+
+        // Update pending count from live page data
+        const liveCount = getLinkedInTotalCount();
+        if (liveCount !== null) {
+            state.stats.pendingInvitations = liveCount;
+            state.stats.pendingUpdatedAt = Date.now();
+        }
+    }
+
+    // Send legacy message for immediate UI updates (backwards compact)
+    // BUT we also broadcast full state for anyone listening for state updates
+
+    // Legacy support might not be needed if we fully refactor popup, 
+    // but keeping specific event for granular updates is efficient.
     const msg = { action: 'UPDATE_STATUS', text, progress };
     if (clearedData) {
-        // Send full clearedData object for queue rendering
-        msg.clearedData = {
-            name: clearedData.name,
-            age: clearedData.age,
-            profileUrl: clearedData.profileUrl,
-            status: clearedData.status || 'completed'
-        };
-        // Legacy fields for backwards compatibility
+        msg.clearedData = clearedData;
+        // Legacy
         msg.clearedName = clearedData.name;
         msg.clearedAge = clearedData.age;
     }
@@ -853,6 +1117,9 @@ function updateStatus(text, progress, clearedData = null, partialResults = null)
         msg.partialResults = partialResults;
     }
     chrome.runtime.sendMessage(msg).catch(() => { });
+
+    // Persist state to storage (source of truth)
+    saveState();
 }
 
 // Record withdrawal to history storage
@@ -872,7 +1139,7 @@ async function recordWithdrawal(name, profileUrl, age, project = null) {
             history.push({
                 sessionId: sessionId,
                 sessionDate: now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-                mode: currentMode,
+                mode: state.currentMode,
                 withdrawals: []
             });
         }
@@ -883,7 +1150,7 @@ async function recordWithdrawal(name, profileUrl, age, project = null) {
             session = {
                 sessionId: sessionId,
                 sessionDate: now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-                mode: currentMode,
+                mode: state.currentMode,
                 withdrawals: []
             };
             history.push(session);
@@ -964,7 +1231,7 @@ function highlightConnection(element, type) {
 
 // Scan all connections and index messages
 async function scanConnections() {
-    currentSubMode = 'scanning';
+    state.subMode = 'scanning';
     updateStatus('Scanning: Starting...', 0);
 
     // Reset found list
@@ -979,7 +1246,7 @@ async function scanConnections() {
     console.log('ClearConnect: Scanning using container', scrollContainer);
 
     for (let i = 0; i < maxScrolls; i++) {
-        if (!isRunning) break;
+        if (!state.isRunning) break;
 
         // Scroll to bottom using helper
         const scrollHeight = getScrollHeight();
@@ -1059,7 +1326,7 @@ async function scanConnections() {
         previousHeight = currentHeight;
     }
 
-    if (!isRunning) return;
+    if (!state.isRunning) return;
 
     // Final Indexing - The Truth
     updateStatus('Finalizing index...', 95);
@@ -1151,7 +1418,9 @@ async function scanConnections() {
         totalScanned: buttons.length
     }).catch(() => { });
 
-    isRunning = false;
+    state.isRunning = false;
+    state.subMode = 'idle';
+    broadcastState('SCAN_COMPLETE');
 }
 
 function showConnection(hash) {
@@ -1190,10 +1459,10 @@ function showConnection(hash) {
 
 // Withdraw selected groups
 async function withdrawSelected(selectedHashes) {
-    currentSubMode = 'withdrawing';
+    state.subMode = 'withdrawing';
     const targetHashes = new Set(selectedHashes);
     const buttons = findWithdrawButtons(); // Working from existing list (assuming page hasn't changed much, but will verify)
-    totalToWithdraw = buttons.length; // Approximate, effective total is matching count
+    state.stats.total = buttons.length; // Approximate, effective total is matching count
 
     // Recalculate exact total for selected
     let matchingTotal = 0;
@@ -1201,13 +1470,13 @@ async function withdrawSelected(selectedHashes) {
         const msg = normalizeMessage(getConnectionMessage(btn));
         if (targetHashes.has(hashMessage(msg))) matchingTotal++;
     }
-    totalToWithdraw = matchingTotal;
+    state.stats.total = matchingTotal;
 
     // Work from BOTTOM UP
-    let processed = 0;
+    state.stats.processed = 0;
 
     for (let i = buttons.length - 1; i >= 0; i--) {
-        if (!isRunning) break;
+        if (!state.isRunning) break;
 
         const btn = buttons[i];
         const msg = normalizeMessage(getConnectionMessage(btn));
@@ -1221,16 +1490,16 @@ async function withdrawSelected(selectedHashes) {
 
             // Safety check
             if (!isSafe(btn)) {
-                complete(`Safety stop: ${personName} (${ageText}) was too recent... ${processed} older connections cleared.`);
-                isRunning = false;
+                complete(`Safety stop: ${personName} (${ageText}) was too recent... ${state.stats.processed} older connections cleared.`, {}, 'safety');
+                state.isRunning = false;
                 return;
             }
 
             // Wait if paused
-            while (isPaused && isRunning) {
+            while (state.isPaused && state.isRunning) {
                 await wait(500);
             }
-            if (!isRunning) break;
+            if (!state.isRunning) break;
 
             highlightConnection(btn, 'processing');
 
@@ -1239,7 +1508,7 @@ async function withdrawSelected(selectedHashes) {
             if (withdrawSpan) withdrawSpan.classList.add('cc-highlight-withdraw');
 
             // Send 'active' status for queue update
-            updateStatus(`[${processed + 1}/${totalToWithdraw}] ${personName}`, Math.round((processed / totalToWithdraw) * 100), {
+            updateStatus(`[${state.stats.processed + 1}/${state.stats.total}] ${personName}`, Math.round((state.stats.processed / state.stats.total) * 100), {
                 name: personName,
                 age: ageText,
                 status: 'active'
@@ -1249,7 +1518,7 @@ async function withdrawSelected(selectedHashes) {
 
             let confirmed = false;
 
-            if (debugMode) {
+            if (state.settings.debugMode) {
                 // Debug mode: Just highlight, don't click
                 const card = btn.closest('[role="listitem"]');
                 if (card) {
@@ -1277,15 +1546,15 @@ async function withdrawSelected(selectedHashes) {
             }
 
             if (confirmed) {
-                processed++;
+                state.stats.processed++;
                 // Record to history with project/topic
                 const profileUrl = getProfileUrl(btn);
                 const projectName = msg.length > 60 ? msg.substring(0, 60) + '...' : msg;
                 await recordWithdrawal(personName, profileUrl, ageText, projectName);
 
                 // Send 'completed' status for queue update
-                const statusPrefix = debugMode ? '[DEBUG] ' : '';
-                updateStatus(`${statusPrefix}[${processed}/${totalToWithdraw}] Cleared ${personName}`, Math.round((processed / totalToWithdraw) * 100), {
+                const statusPrefix = state.settings.debugMode ? '[DEBUG] ' : '';
+                updateStatus(`${statusPrefix}[${state.stats.processed}/${state.stats.total}] Cleared ${personName}`, Math.round((state.stats.processed / state.stats.total) * 100), {
                     name: personName,
                     age: ageText,
                     status: 'completed'
@@ -1303,5 +1572,5 @@ async function withdrawSelected(selectedHashes) {
         }
     }
 
-    complete(`Done! Cleared ${processed} selected connections.`);
+    complete(`Done! Cleared ${state.stats.processed} selected connections.`);
 }
