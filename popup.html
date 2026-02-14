@@ -6,13 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ClearConnect</title>
     <link rel="stylesheet" href="popup.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
 </head>
 
 <body>
     <div class="app">
-        <!-- Header -->
-        <header class="header">
+        <!-- Header (static, not cleared on render) -->
+        <header class="header" id="app-header">
             <a id="logo-btn" class="logo" href="#">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -43,492 +43,44 @@
             </button>
         </header>
 
-        <!-- Wrong Page View -->
-        <div id="wrong-page-view" class="view" style="display:none;">
-            <div class="message-box">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ff9800" stroke-width="2">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="8" x2="12" y2="12" />
-                    <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-                <h2 id="wrong-page-title">Wrong Page</h2>
-                <p id="wrong-page-msg">Please navigate to the Sent Invitations page.</p>
-                <button id="open-sent-btn" class="primary-btn">Open Sent Invitations</button>
-            </div>
+        <!-- Process Section (Active Run) - content injected by getProgressHTML() -->
+        <div id="process-section" class="view-section hidden"></div>
+
+        <!-- 3. Results Section (Fades In) -->
+        <div id="results-section" class="view-section hidden">
+            <!-- Stats Grid & History injected here or static? -->
+            <!-- For now, we keep the dynamic injection for the INNER content of results, 
+                      but the CONTAINER exists to fade in. -->
+            <div id="results-content"></div>
         </div>
 
-        <!-- Main View -->
-        <div id="main-view" class="view">
-            <!-- Safe Mode Notice (at top) -->
-            <div id="safe-badge" class="safe-notice">
-                Preserves connections sent within the last <a href="#" id="safe-badge-link"><span id="safe-badge-text">1
-                        month</span></a>
-            </div>
+        <!-- 4. Error Section (Transient) -->
+        <div id="error-section" class="view-section hidden"></div>
 
-            <!-- Mode Toggle -->
-            <div class="mode-toggle">
-                <button id="mode-count" class="mode-btn active">By Count</button>
-                <button id="mode-age" class="mode-btn">By Age</button>
-                <button id="mode-message" class="mode-btn">By Message</button>
-            </div>
-
-            <!-- By Count Input -->
-            <div id="count-input" class="input-section">
-                <label>Connections to withdraw</label>
-                <div class="input-row full-width">
-                    <input type="number" id="withdraw-count" value="10" min="1" max="5000">
-                    <span class="suffix">people</span>
-                </div>
-            </div>
-
-            <!-- By Age Input -->
-            <div id="age-input" class="input-section" style="display:none;">
-                <div class="input-row full-width">
-                    <input type="number" id="age-value" value="3" min="1" max="365">
-                    <select id="age-unit">
-                        <option value="day">days</option>
-                        <option value="week">weeks</option>
-                        <option value="month" selected>months</option>
-                        <option value="year">years</option>
-                    </select>
-                    <span class="suffix">ago +</span>
-                </div>
-            </div>
-
-            <!-- By Message Input -->
-            <div id="message-input" class="input-section" style="display:none;">
-                <p class="mode-desc-small">
-                    Scans all connections to auto-discover message groups. You can select which groups to withdraw.
-                </p>
-                <button id="scan-btn" class="primary-btn scan-btn">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="11" cy="11" r="8"></circle>
-                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                    </svg>
-                    Start Scan
-                </button>
-            </div>
-
-            <!-- Mode Description -->
-            <p id="mode-desc" class="mode-desc">Withdraws the 10 oldest pending connections.</p>
-
-            <!-- Start Button -->
-            <button id="start-btn" class="primary-btn">Start Clearing</button>
-
-            <!-- Lifetime Stats -->
-            <div class="home-alltime">
-                <span id="home-alltime-count">0</span> connections cleared all-time 🎉
-            </div>
+        <!-- 5. Home/Settings (Default) -->
+        <div id="home-section" class="view-section">
+            <!-- Will be populated by initial render or simple visibility toggle if we move home HTML here too -->
         </div>
-
-        <!-- Scan Results View -->
-        <div id="scan-results-view" class="view" style="display:none;">
-            <h2 class="section-title">Scan Results</h2>
-            <p class="scan-desc">Select message groups to withdraw.</p>
-
-            <div id="scan-results-list" class="scan-results-list">
-                <!-- Populated dynamically -->
-            </div>
-
-            <div class="empty-scan" id="empty-scan" style="display:none;">
-                <p>No message patterns found.</p>
-                <button id="scan-again-btn" class="link-btn">Scan Again</button>
-            </div>
-
-            <div class="scan-actions">
-                <button id="withdraw-selected-btn" class="primary-btn" disabled>Withdraw Selected (<span
-                        id="selected-count">12</span>)</button>
-                <button id="cancel-scan-btn" class="secondary-btn">Cancel</button>
-            </div>
-        </div>
-
-        <!-- Progress View -->
-        <div id="progress-view" class="view" style="display:none;">
-            <h2 id="active-operation-title" class="section-title">Clearing connections...</h2>
-
-            <!-- COUNT / AGE PROGRESS LAYOUT -->
-            <div id="progress-layout-standard" style="display:none;">
-                <!-- Load/Scroll Step -->
-                <div id="step-scroll" class="progress-step active">
-                    <div class="step-header">
-                        <svg id="step-scroll-check" class="step-check" width="16" height="16" viewBox="0 0 24 24"
-                            fill="none" stroke="currentColor" stroke-width="3" style="display:none;">
-                            <path d="M20 6L9 17l-5-5" />
-                        </svg>
-                        <span id="step-scroll-num" class="step-num">1</span>
-                        <span class="step-label wave-text">Discovery Progress</span>
-                    </div>
-                    <div class="step-content">
-                        <div class="progress-bar-bg">
-                            <div id="scroll-progress-fill" class="progress-bar-fill"></div>
-                        </div>
-                        <p id="scroll-status" class="status-text">Starting...</p>
-                    </div>
-                </div>
-
-                <!-- Withdraw Step -->
-                <div id="step-withdraw" class="progress-step">
-                    <div class="step-header">
-                        <svg id="step-withdraw-check" class="step-check" width="16" height="16" viewBox="0 0 24 24"
-                            fill="none" stroke="currentColor" stroke-width="3" style="display:none;">
-                            <path d="M20 6L9 17l-5-5" />
-                        </svg>
-                        <span id="step-withdraw-num" class="step-num">2</span>
-                        <span class="step-label">Withdrawal Progress</span>
-                    </div>
-                    <div class="step-content">
-                        <div class="progress-bar-bg">
-                            <div id="progress-fill" class="progress-bar-fill"></div>
-                        </div>
-                        <p id="status-text" class="status-text">Waiting...</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- MESSAGE MODE PROGRESS LAYOUT -->
-            <div id="progress-layout-message" style="display:none;">
-                <!-- Scanning State -->
-                <div id="msg-step-scan" class="progress-step active">
-                    <div class="step-header">
-                        <span class="step-num">1</span>
-                        <span class="step-label wave-text">Scanning...</span>
-                    </div>
-                    <div class="step-content">
-                        <div class="progress-bar-bg">
-                            <div id="msg-scan-fill" class="progress-bar-fill"></div>
-                        </div>
-                        <p id="msg-scan-status" class="status-text">Found 0 unique messages.</p>
-                    </div>
-                </div>
-
-                <!-- Withdrawing State -->
-                <div id="msg-step-withdraw" class="progress-step" style="display:none;">
-                    <div class="step-header">
-                        <span class="step-num">2</span>
-                        <span class="step-label">Withdrawing...</span>
-                    </div>
-                    <div class="step-content">
-                        <div class="progress-bar-bg">
-                            <div id="msg-withdraw-fill" class="progress-bar-fill"></div>
-                        </div>
-                        <p id="msg-withdraw-status" class="status-text">Preparing...</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Unified Removal Queue / Matches List -->
-            <div id="matches-list-section" class="matches-list-section" style="display:none;">
-                <div class="matches-header">
-                    <span id="matches-label" class="matches-label">Removal Queue</span>
-                    <button id="matches-toggle" type="button" class="matches-toggle" title="Toggle list">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <polyline points="6 9 12 15 18 9" />
-                        </svg>
-                    </button>
-                </div>
-                <div id="matches-list-wrapper" class="matches-list-wrapper">
-                    <table id="matches-table" class="matches-table">
-                        <tbody id="matches-list"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Message Edit Section (for message mode, hidden by default) -->
-            <div id="message-edit-section" class="message-edit-section" style="display:none;">
-                <textarea id="edit-message-1" class="message-textarea" placeholder="Message pattern 1..."
-                    maxlength="300"></textarea>
-                <textarea id="edit-message-2" class="message-textarea" placeholder="Message pattern 2 (optional)..."
-                    maxlength="300"></textarea>
-                <textarea id="edit-message-3" class="message-textarea" placeholder="Message pattern 3 (optional)..."
-                    maxlength="300"></textarea>
-                <button id="apply-messages-btn" type="button" class="primary-btn small">Apply & Search</button>
-            </div>
-
-            <!-- Edit Messages Link (shown when edit section hidden) -->
-            <a href="#" id="edit-messages-link" class="edit-link" style="display:none;">Edit messages to clear</a>
-
-            <!-- People Queue List (shows who will be/was withdrawn) -->
-            <div id="people-queue-section" class="live-results-section" style="display:none;">
-                <h3 class="live-results-header">Queued for Removal:</h3>
-                <div id="people-queue-list" class="live-results-list" style="max-height: 200px;">
-                    <!-- Populated dynamically with checkmarks as items complete -->
-                </div>
-            </div>
-
-            <!-- Action Buttons -->
-            <div class="progress-actions" style="display: flex; gap: 8px; margin-top: 12px;">
-                <button id="pause-btn" class="secondary-btn" style="display:none; flex: 1;">
-                    <span class="btn-text">Pause</span>
-                    <svg class="btn-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                        stroke="currentColor" stroke-width="2"
-                        style="display:none; animation: spin 1s linear infinite;">
-                        <circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="32"></circle>
-                    </svg>
-                </button>
-                <button id="stop-btn" class="secondary-btn" style="flex: 1;">
-                    <span class="btn-text">Stop</span>
-                    <svg class="btn-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                        stroke="currentColor" stroke-width="2"
-                        style="display:none; animation: spin 1s linear infinite;">
-                        <circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="32"></circle>
-                    </svg>
-                </button>
-            </div>
-
-            <!-- Inline Stats (hidden initially, fades in on complete) -->
-            <div id="inline-stats" class="inline-stats" style="display:none;">
-                <div class="stat-row">
-                    <span>Cleared This Run</span>
-                    <strong id="inline-stat-cleared">0</strong>
-                </div>
-                <div class="stat-row">
-                    <span>Current Connections</span>
-                    <strong id="inline-stat-remaining">-</strong>
-                </div>
-                <div class="stat-row">
-                    <span>Available Capacity</span>
-                    <strong id="inline-stat-capacity">-</strong>
-                </div>
-                <div class="health-section">
-                    <div class="health-label-row">
-                        <label>Connection Capacity Used</label>
-                        <span id="inline-health-text">0 / ~1200</span>
-                    </div>
-                    <div class="health-bar-bg">
-                        <div id="inline-health-fill" class="health-bar-fill"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Continue Section (hidden initially) -->
-            <div id="inline-continue" class="continue-section" style="display:none;">
-                <p class="continue-label">Continue clearing?</p>
-                <div class="continue-option active" id="inline-option-count">
-                    <label>
-                        <input type="radio" name="inline-continue-mode" value="count" checked>
-                        Clear <input type="number" id="inline-continue-count" value="10" min="1" max="500"
-                            class="inline-input"> more
-                    </label>
-                </div>
-                <div class="continue-option disabled" id="inline-option-age">
-                    <label>
-                        <input type="radio" name="inline-continue-mode" value="age">
-                        Clear connections sent
-                        <div class="input-row full-width inline-age-row">
-                            <input type="number" id="inline-continue-age-value" value="3" min="1" max="365"
-                                class="inline-input" disabled>
-                            <select id="inline-continue-age-unit" class="inline-select" disabled>
-                                <option value="day">days</option>
-                                <option value="week">weeks</option>
-                                <option value="month" selected>months</option>
-                                <option value="year">years</option>
-                            </select>
-                            <span class="suffix">ago +</span>
-                        </div>
-                    </label>
-                </div>
-                <div class="continue-actions">
-                    <button id="inline-continue-btn" class="primary-btn">Continue Clearing</button>
-                    <button id="inline-done-btn" class="secondary-btn">Done</button>
-                </div>
-            </div>
-
-            <!-- All-time Stats (hidden initially) -->
-            <div id="inline-alltime" class="alltime-stats" style="display:none;">
-                <span id="inline-alltime-count">0</span> connections cleared all-time 🎉
-            </div>
-        </div>
-
-        <!-- Completed View -->
-        <div id="completed-view" class="view" style="display:none;">
-            <div class="stats-section">
-                <h3 id="stats-title">Connection Stats</h3>
-                <div class="stat-row">
-                    <span>Current Connections</span>
-                    <strong id="stat-remaining">-</strong>
-                </div>
-                <div class="stat-row">
-                    <span>Available Capacity</span>
-                    <strong id="stat-capacity">-</strong>
-                </div>
-                <div class="stat-row">
-                    <span>Last Cleared</span>
-                    <strong id="stat-cleared">-</strong>
-                </div>
-                <div class="stat-row">
-                    <span>Last Run</span>
-                    <strong id="stat-last-run">Never</strong>
-                </div>
-                <div class="health-section">
-                    <label>Connection Capacity Used</label>
-                    <div class="health-bar-bg">
-                        <div id="health-fill" class="health-bar-fill"></div>
-                    </div>
-                    <p id="health-text" class="health-text">-</p>
-                </div>
-            </div>
-
-            <!-- Cleared Connections List -->
-            <div id="cleared-list-section" class="live-results-section" style="display:none;">
-                <h3 class="live-results-header">Just Cleared:</h3>
-                <div id="cleared-list" class="live-results-list" style="max-height: 150px;">
-                    <!-- Populated dynamically -->
-                </div>
-            </div>
-
-            <!-- Continue Clearing Options -->
-            <div class="continue-section">
-                <p class="continue-label">Continue clearing?</p>
-
-                <!-- STANDARD POST-WITHDRAW (Count / Age) -->
-                <div id="post-withdraw-standard">
-                    <div class="continue-option" id="option-count">
-                        <label>
-                            <input type="radio" name="continue-mode" value="count" checked>
-                            Clear <input type="number" id="continue-count" value="10" min="1" max="500"
-                                class="inline-input"> more
-                        </label>
-                    </div>
-
-                    <div class="continue-option" id="option-age">
-                        <label>
-                            <input type="radio" name="continue-mode" value="age">
-                            Clear connections sent
-                            <div class="input-row full-width inline-age-row">
-                                <input type="number" id="continue-age-value" value="3" min="1" max="365"
-                                    class="inline-input">
-                                <select id="continue-age-unit" class="inline-select">
-                                    <option value="day">days</option>
-                                    <option value="week">weeks</option>
-                                    <option value="month" selected>months</option>
-                                    <option value="year">years</option>
-                                </select>
-                                <span class="suffix">ago +</span>
-                            </div>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- MESSAGE POST-WITHDRAW -->
-                <div id="post-withdraw-message" style="display:none;">
-                    <p class="mode-desc-small">Select remaining groups to clear:</p>
-                    <div id="remaining-scan-list" class="scan-results-list" style="max-height: 150px;">
-                        <!-- Populated dynamically -->
-                    </div>
-                </div>
-
-                <div class="continue-actions">
-                    <button id="continue-btn" class="primary-btn">Continue Clearing</button>
-                    <button id="done-btn" class="secondary-btn">Done</button>
-                </div>
-            </div>
-
-            <!-- Back button (shown when continue section is hidden) -->
-            <button id="stats-back-btn" class="primary-btn" style="display:none;">Back to Home</button>
-
-            <!-- All-Time Stats -->
-            <div class="alltime-stats">
-                <span id="alltime-count">0</span> connections cleared all-time 🎉
-            </div>
-        </div>
-
-        <!-- Settings View -->
-        <div id="settings-view" class="view" style="display:none;">
-            <h3>Settings</h3>
-
-            <!-- Theme Toggle -->
-            <div class="setting-group">
-                <label>Appearance</label>
-                <div class="theme-toggle">
-                    <button id="theme-light" class="theme-btn active" title="Light">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <circle cx="12" cy="12" r="5" />
-                            <line x1="12" y1="1" x2="12" y2="3" />
-                            <line x1="12" y1="21" x2="12" y2="23" />
-                            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                            <line x1="1" y1="12" x2="3" y2="12" />
-                            <line x1="21" y1="12" x2="23" y2="12" />
-                            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-                        </svg>
-                    </button>
-                    <button id="theme-dark" class="theme-btn" title="Dark">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                        </svg>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Safe Mode -->
-            <div class="setting-option" id="safe-mode-option">
-                <label>
-                    <input type="checkbox" id="safe-mode-toggle" checked>
-                    <span class="option-text">
-                        <strong>Safe Mode</strong>
-                        <small>Preserves connections sent within the last:</small>
-                    </span>
-                </label>
-                <div id="safe-threshold-group" class="inline-threshold">
-                    <input type="number" id="safe-threshold" value="1" min="1" max="12" class="inline-input">
-                    <select id="safe-unit" class="inline-select">
-                        <option value="month" selected>months</option>
-                        <option value="week">weeks</option>
-                    </select>
-                </div>
-            </div>
-
-            <!-- Debug Mode -->
-            <div class="setting-option">
-                <label>
-                    <input type="checkbox" id="debug-mode-toggle">
-                    <span class="option-text">
-                        <strong>Debug Mode</strong>
-                        <small>Simulates withdrawals without actually removing connections (highlights buttons
-                            only)</small>
-                    </span>
-                </label>
-            </div>
-
-            <!-- Advanced Setting Removed -->
-
-            <div class="btn-row">
-                <button id="save-settings" class="primary-btn">Save</button>
-                <button id="back-btn" class="secondary-btn">Back</button>
-            </div>
-        </div>
-
-        <!-- History View -->
-        <div id="history-view" class="view" style="display:none;">
-            <h2 class="section-title">Withdrawal History</h2>
-            <div id="history-content" class="history-content">
-                <p class="empty-history" id="empty-history">No withdrawals recorded yet.</p>
-                <div id="history-sessions"></div>
-            </div>
-            <button id="history-back-btn" class="secondary-btn">Back</button>
-        </div>
-
-        <!-- Footer -->
-        <footer class="footer" id="footer">
-            <div id="footer-content" class="footer-msg">
-                <svg id="footer-icon-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    stroke-width="2" style="display:none;">
-                    <path d="M20 6L9 17l-5-5" />
-                </svg>
-                <svg id="footer-icon-error" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    stroke-width="2" style="display:none;">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="15" y1="9" x2="9" y2="15" />
-                    <line x1="9" y1="9" x2="15" y2="15" />
-                </svg>
-                <span id="footer-hint">Ensure you're on the "Sent" invitations page.</span>
-            </div>
-        </footer>
     </div>
+
+    <!-- Footer (static, not cleared on render) -->
+    <footer class="footer" id="footer">
+        <!-- Dynamic Global Status (injected by renderUI) -->
+        <div id="footer-status"></div>
+        <div id="footer-content" class="footer-msg">
+            <svg id="footer-icon-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" style="display:none;">
+                <path d="M20 6L9 17l-5-5" />
+            </svg>
+            <svg id="footer-icon-error" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" style="display:none;">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="15" y1="9" x2="9" y2="15" />
+                <line x1="9" y1="9" x2="15" y2="15" />
+            </svg>
+            <span id="footer-hint"></span>
+        </div>
+    </footer>
     <script src="popup.js"></script>
 </body>
 

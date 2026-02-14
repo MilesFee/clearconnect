@@ -63,6 +63,14 @@
 
     --shadow-sm: 0px 1px 3px 0px #00000020;
     --shadow-md: 0px 4px 6px 0px #00000030;
+
+    /* Functional backgrounds - dark variants */
+    --success-bg: #0f2a1f;
+    --warning-bg: #2a1f0f;
+    --danger-bg: #2a0f0f;
+    --info-bg: #0f1a2a;
+    --caution-bg: #2a250f;
+    --caution-text: #fbbf24;
 }
 
 * {
@@ -838,17 +846,20 @@ body {
     background: var(--bg-surface);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    opacity: 0.5;
-    transition: opacity 0.3s, border-color 0.3s;
+    opacity: 0.6;
+    filter: saturate(0.3);
+    transition: opacity 0.3s, border-color 0.3s, filter 0.3s;
 }
 
 .progress-step.active {
     opacity: 1;
+    filter: saturate(1);
     border-color: var(--brand-primary);
 }
 
 .progress-step.completed {
     opacity: 0.7;
+    filter: saturate(0.6);
     border-color: var(--success);
 }
 
@@ -901,6 +912,20 @@ body {
             var(--text-primary) 0%,
             var(--text-primary) 40%,
             var(--brand-primary) 50%,
+            var(--text-primary) 60%,
+            var(--text-primary) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: wave 2s ease-in-out infinite;
+}
+
+.wave-text-orange {
+    background: linear-gradient(90deg,
+            var(--text-primary) 0%,
+            var(--text-primary) 40%,
+            var(--warning) 50%,
             var(--text-primary) 60%,
             var(--text-primary) 100%);
     background-size: 200% 100%;
@@ -1727,4 +1752,933 @@ body {
 
 .secondary-btn.loading .btn-spinner {
     display: inline-block;
+}
+
+/* ============ Withdrawal History Styles ============ */
+.history-content {
+    max-height: 350px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+}
+
+.history-session {
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+}
+
+.history-session-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-default);
+}
+
+.session-date {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.session-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-neutral);
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
+.history-session-items {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.history-entry {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 8px;
+    background: var(--bg-card);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+}
+
+.history-link {
+    color: var(--brand-primary);
+    text-decoration: none;
+    font-weight: 500;
+    transition: opacity 0.2s;
+}
+
+.history-link:hover {
+    opacity: 0.8;
+    text-decoration: underline;
+}
+
+[data-theme="dark"] .history-link {
+    color: var(--brand-primary);
+}
+
+.history-age {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.empty-history {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+    padding: 24px;
+}
+
+/* Collapsible Session Toggle */
+.history-session-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.session-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.history-session-header .chevron {
+    transition: transform 0.2s ease;
+    color: var(--text-secondary);
+}
+
+.history-session.collapsed .chevron {
+    transform: rotate(-90deg);
+}
+
+.history-session.expanded .chevron {
+    transform: rotate(0deg);
+}
+
+.history-session.collapsed .history-session-items {
+    display: none;
+}
+
+.history-session.expanded .history-session-items {
+    display: flex;
+}
+
+/* ============ Dynamic Status Container ============ */
+#status-container {
+    margin-bottom: 12px;
+}
+
+#status-container:empty {
+    display: none;
+}
+
+.status-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+    border-radius: var(--radius-md);
+    margin-bottom: 0;
+}
+
+.status-box .status-icon {
+    font-size: 18px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.status-box .status-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.status-box .status-content strong {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.status-box .status-detail {
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.status-box .status-link {
+    font-size: 11px;
+    margin-top: 4px;
+}
+
+.status-box .status-btn {
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 500;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    margin-top: 6px;
+    transition: opacity 0.2s;
+}
+
+.status-box .status-btn:hover {
+    opacity: 0.9;
+}
+
+/* Success variant (Completion) */
+.status-box.status-success {
+    background: var(--success-bg);
+    border: 1px solid var(--success);
+}
+
+.status-box.status-success .status-icon {
+    color: var(--success);
+}
+
+.status-box.status-success .status-content strong {
+    color: var(--success);
+}
+
+.status-box.status-success .status-link {
+    color: var(--success);
+}
+
+/* Warning variant (Awareness) */
+.status-box.status-warning {
+    background: var(--warning-bg);
+    border: 1px solid var(--warning);
+}
+
+.status-box.status-warning .status-icon {
+    color: var(--warning);
+}
+
+.status-box.status-warning .status-content span {
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.status-box.status-warning .status-btn {
+    background: var(--warning);
+    color: white;
+}
+
+/* Active variant (Running) */
+.status-box.status-active {
+    background: var(--info-bg);
+    border: 1px solid var(--info);
+}
+
+.status-box.status-active .status-content strong {
+    color: var(--info);
+    font-size: 12px;
+}
+
+/* Mini progress bar for active status */
+.mini-progress {
+    height: 4px;
+    background: var(--bg-neutral);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 6px;
+}
+
+.mini-progress-fill {
+    height: 100%;
+    background: var(--info);
+    transition: width 0.3s ease;
+}
+
+/* Confirm variant (Idle + Correct Page) */
+.status-box.status-confirm {
+    background: var(--success-bg);
+    border: 1px solid var(--success);
+    padding: 8px 12px;
+}
+
+.status-box.status-confirm .status-icon {
+    color: var(--success);
+    font-size: 14px;
+}
+
+.status-box.status-confirm .status-content span {
+    color: var(--success);
+    font-size: 12px;
+}
+
+/* Error variant (Manual Stop) */
+.status-box.status-error {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid #ef4444;
+}
+
+.status-box.status-error .status-icon {
+    color: #ef4444;
+    font-size: 16px;
+}
+
+.status-box.status-error .status-content strong {
+    color: #ef4444;
+    font-size: 13px;
+}
+
+.status-box.status-error .status-link {
+    color: #ef4444;
+}
+
+/* Critical variant (Fatal Error) */
+.status-box.status-critical {
+    background: rgba(185, 28, 28, 0.15);
+    border: 1px solid #b91c1c;
+}
+
+.status-box.status-critical .status-icon {
+    color: #b91c1c;
+    font-size: 16px;
+}
+
+.status-box.status-critical .status-content strong {
+    color: #b91c1c;
+    font-size: 13px;
+}
+
+.status-box.status-critical .status-link {
+    color: #b91c1c;
+}
+
+/* Footer status container */
+#footer-status {
+    padding: 0 12px;
+}
+
+#footer-status:empty {
+    display: none;
+}
+
+#footer-status .status-box {
+    margin-bottom: 8px;
+}
+
+/* Session log for results view */
+.session-log {
+    background: var(--surface-hover);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin: 12px 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.session-log .log-label {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-right: 4px;
+}
+
+/* ============ LIVE PEOPLE LIST ============ */
+.people-list {
+    margin-top: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    border-radius: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    transition: opacity 300ms ease, transform 300ms ease;
+}
+
+.people-list.hidden {
+    opacity: 0;
+    transform: translateY(-10px);
+    pointer-events: none;
+}
+
+.people-list.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.people-list .list-title {
+    padding: 8px 12px;
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-hover);
+}
+
+.people-list-items {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.person-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    transition: background 200ms, opacity 200ms;
+}
+
+.person-item:last-child {
+    border-bottom: none;
+}
+
+.person-item.cleared {
+    background: rgba(34, 197, 94, 0.08);
+    text-decoration: line-through;
+    opacity: 0.7;
+}
+
+.person-item.cleared .person-check {
+    color: var(--success);
+    font-size: 12px;
+    margin-left: auto;
+}
+
+.person-item.active {
+    background: rgba(249, 115, 22, 0.12);
+    border-left: 3px solid var(--warning);
+}
+
+.person-item.active .person-name {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.person-item.pending {
+    opacity: 0.6;
+}
+
+.person-name {
+    flex: 1;
+    color: var(--text-primary);
+}
+
+.person-age {
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+/* Phase Transition Animations */
+/* MOVED TO BOTTOM OF FILE FOR CONSOLIDATION */
+
+.phase-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.phase-hidden {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+    padding: 0;
+    margin: 0;
+    pointer-events: none;
+}
+
+/* Force Hide Queue in Results View (User Requirement) */
+body.results-active #people-list-container,
+body.results-active .progress-actions {
+    display: none !important;
+}
+
+/* Specific: Scanning bar fades out backwards */
+.phase-fade-out-back {
+    opacity: 0 !important;
+    transform: scale(0.9) translateY(-20px) !important;
+    max-height: 0 !important;
+    margin-bottom: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+/* Specific: Withdrawing bar shifts up */
+.phase-shift-up {
+    /* If previous element collapses, this naturally shifts up. 
+       We can add a small "pop" or slide effect if desired. */
+    transition-delay: 0.1s;
+    /* Wait slightly for step 1 to start fading */
+}
+
+.phase-slide-up {
+    animation: slideUp 0.4s ease forwards;
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.phase-fade-out {
+    opacity: 0;
+    transition: opacity 300ms ease;
+}
+
+.phase-fade-in {
+    opacity: 1;
+    transition: opacity 300ms ease;
+}
+
+/* Invitations Remaining Bar Colors */
+.remaining-bar.green .progress-bar-fill {
+    background: var(--success);
+}
+
+.remaining-bar.orange .progress-bar-fill {
+    background: var(--warning);
+}
+
+.remaining-bar.red .progress-bar-fill {
+    background: var(--danger);
+}
+
+/* Remaining Section */
+.remaining-section {
+    margin: 12px 0;
+    padding: 10px;
+    background: var(--surface-hover);
+    border-radius: 8px;
+}
+
+.remaining-section .stat-row {
+    margin-bottom: 6px;
+}
+
+.remaining-section .progress-bar-bg {
+    height: 6px;
+}
+
+/* Collapsible Cleared List */
+.cleared-list-collapsible {
+    margin: 12px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.cleared-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--surface-hover);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.cleared-list-header:hover {
+    background: var(--surface);
+}
+
+.cleared-count {
+    background: #e5e7eb;
+    /* Light Grey */
+    color: #4b5563;
+    /* Grey Text */
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.cleared-list-items {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.cleared-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+}
+
+.cleared-name {
+    color: var(--text-primary);
+}
+
+.cleared-age {
+    color: var(--text-tertiary);
+    font-size: 11px;
+}
+
+/* Continue Options */
+.continue-options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.continue-option {
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.continue-option label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+}
+
+.inline-select {
+    padding: 4px 8px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-primary);
+}
+
+/* Classic Results Page Styles */
+.result-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    margin-bottom: 16px;
+    border-radius: 8px;
+    text-align: center;
+    gap: 8px;
+}
+
+.result-header.completed {
+    background: var(--success-bg);
+    border: 1px solid var(--success);
+}
+
+.result-header.stopped {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid #ef4444;
+}
+
+.result-header.warning {
+    background: var(--warning-bg);
+    border: 1px solid var(--warning);
+}
+
+.result-header.error {
+    background: rgba(185, 28, 28, 0.15);
+    border: 1px solid #b91c1c;
+}
+
+.result-icon {
+    font-size: 24px;
+    margin-bottom: 4px;
+}
+
+.result-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.result-message {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.remaining-label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.radio-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-bottom: 1px;
+}
+
+.radio-option:hover {
+    border-color: var(--brand-primary);
+    background: var(--bg-hover);
+}
+
+.radio-option input[type="radio"] {
+    accent-color: var(--brand-primary);
+}
+
+/* CSS Transitions for UI States */
+.view-section {
+    transition: opacity 0.4s ease, transform 0.4s ease;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.view-section.hidden {
+    /* Base hidden state */
+    opacity: 0;
+    pointer-events: none;
+    display: none;
+    /* Fallback */
+}
+
+/* User Specific Transition Classes */
+.fade-out {
+    opacity: 0 !important;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+}
+
+.slide-up {
+    transform: translateY(-100px);
+    /* Adjust based on desired final position */
+    transition: transform 0.5s ease-in-out;
+}
+
+.fade-in {
+    opacity: 1 !important;
+    transition: opacity 0.5s ease-in-out;
+}
+
+#results-section {
+    opacity: 0;
+}
+
+#results-section.fade-in {
+    opacity: 1;
+}
+
+/* Queue List Transition */
+.people-list {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.5s ease-in-out, opacity 0.5s ease-in-out, margin-top 0.3s ease;
+    margin-top: 0;
+}
+
+.people-list.visible {
+    max-height: 400px;
+    opacity: 1;
+    margin-top: 16px;
+    border-top: 1px solid var(--border-default);
+    padding-top: 12px;
+}
+
+/* ==========================================================================
+   PROGRESS BOX STATES (Standardized)
+   ========================================================================== */
+
+/* Base Step Style */
+.progress-step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+    transition: all 0.3s ease;
+    opacity: 0.6;
+    filter: grayscale(100%);
+}
+
+/* ACTIVE STATE (Orange/Brand) */
+.progress-step.active {
+    opacity: 1 !important;
+    filter: none !important;
+    background: var(--surface) !important;
+
+    /* Revert to User's Orange Request */
+    border-color: var(--brand-primary) !important;
+    box-shadow: 0 0 0 1px var(--brand-primary) !important;
+}
+
+.progress-step.active .step-num {
+    background: var(--brand-primary);
+    /* Orange Badge */
+    color: white;
+}
+
+.progress-step.active .step-label {
+    /* Title Black with Orange Wave (handled by .wave-text clip) */
+    /* If specifically requested "Title black", ensure base color is text-primary */
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+
+/* Fix for Wave Text in Active State */
+.progress-step.active .step-label.wave-text {
+    color: transparent !important;
+    background-clip: text;
+    -webkit-background-clip: text;
+}
+
+/* SUCCESS STATE (Green) */
+.progress-step.success {
+    opacity: 1 !important;
+    filter: none !important;
+    border-color: var(--success) !important;
+    box-shadow: 0 0 0 1px var(--success) !important;
+}
+
+.step-icon.success-icon {
+    background: var(--success) !important;
+    color: white !important;
+    border-color: var(--success) !important;
+}
+
+.progress-step.success .progress-bar-fill.success {
+    background: var(--success) !important;
+}
+
+/* ERROR STATE (Red) */
+.progress-step.error {
+    opacity: 1 !important;
+    filter: none !important;
+    border-color: var(--danger) !important;
+    box-shadow: 0 0 0 1px var(--danger) !important;
+}
+
+.progress-step.error .step-num {
+    background: var(--danger);
+    color: white;
+}
+
+.progress-step.error .step-label {
+    color: var(--danger);
+}
+
+.progress-step.error .progress-bar-fill {
+    background: var(--danger) !important;
+}
+
+/* WARNING STATE (Orange/Yellow) */
+.progress-step.warning {
+    opacity: 1 !important;
+    filter: none !important;
+    border-color: var(--warning) !important;
+    box-shadow: 0 0 0 1px var(--warning) !important;
+}
+
+/* INACTIVE STATE (Grey/Default) */
+/* INACTIVE STATE (Grey/Default) */
+.progress-step.inactive {
+    opacity: 0.5;
+    filter: grayscale(100%);
+    border: 1px solid rgba(0, 0, 0, 0.4) !important;
+    /* "Hairline" darker border */
+    box-shadow: none;
+    background: #f9f9f9;
+}
+
+/* Transition Helpers */
+.progress-step.phase-shift-up {
+    animation: phaseShiftUp 0.4s ease forwards;
+}
+
+@keyframes phaseShiftUp {
+    from {
+        transform: translateY(8px);
+        opacity: 0.5;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Queue List Visibility */
+.people-list {
+    display: block !important;
+    /* Ensure it's rendered for JS transitions */
+    overflow: hidden;
+    transition: max-height 0.4s ease, opacity 0.4s ease, margin 0.3s ease;
+}
+
+
+
+/* Scoped Scroll for Queue */
+/* Progress Bar Fill - BLUE (User Requested) */
+.progress-bar-fill {
+    height: 100%;
+    background: #3c83f6;
+    /* Bespoke Blue Integration */
+    width: 0%;
+    border-radius: 4px;
+    transition: width 0.4s ease, background 0.3s ease;
+}
+
+/* Remove .progress-step.active .progress-bar-fill override to prevent orange reversion */
+
+/* Success Morph Style (Mimic Green Status Bar) */
+.progress-step.success {
+    opacity: 1 !important;
+    filter: none !important;
+    background: var(--success-bg) !important;
+    border-color: var(--success) !important;
+    box-shadow: 0 0 0 1px var(--success) !important;
+    color: var(--success-text);
+    /* Requires --success-text variable or manual color */
+    color: #065f46;
+    /* Dark green text */
+}
+
+.progress-step.success .step-label {
+    color: #065f46;
+    font-weight: 600;
+}
+
+.progress-step.success .step-num {
+    background: var(--success);
+    color: white;
+}
+
+.people-list-wrapper.collapsed {
+    max-height: 0 !important;
+}
+
+.people-list-items {
+    padding: 0;
+    margin: 0;
+    list-style: none;
+}
+
+/* Override previous people-list styles if necessary */
+.cleared-list-collapsible {
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    display: block !important;
 }
