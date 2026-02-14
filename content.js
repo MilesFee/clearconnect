@@ -1191,6 +1191,10 @@ function normalizeMessage(text) {
     // Normalize currency: Replace $100, $1,000, $50.00 with [AMOUNT]
     normalized = normalized.replace(/\$\d+(?:,\d{3})*(?:\.\d+)?/g, '[AMOUNT]');
 
+    // NEW: Remove common sign-offs/signatures at the end
+    // Matches: "Thanks," "Best," "Sincerely," + optional name/newline at VERY end
+    normalized = normalized.replace(/\n\s*(Thanks|Thank you|Best|Best regards|Sincerely|Cheers|Regards|Warmly)[\s\S]*$/i, '');
+
     return normalized.trim();
 }
 
@@ -1465,12 +1469,32 @@ async function withdrawSelected(selectedHashes) {
     state.stats.total = buttons.length; // Approximate, effective total is matching count
 
     // Recalculate exact total for selected
+    // Recalculate exact total for selected
     let matchingTotal = 0;
+    // Reset found matching people for UI display
+    state.foundMatchingPeople = [];
+
     for (const btn of buttons) {
         const msg = normalizeMessage(getConnectionMessage(btn));
-        if (targetHashes.has(hashMessage(msg))) matchingTotal++;
+        if (targetHashes.has(hashMessage(msg))) {
+            matchingTotal++;
+            // Add to UI list
+            const name = getPersonName(btn);
+            const age = getAge(btn);
+            const ageText = age ? `${age.value} ${age.unit}${age.value > 1 ? 's' : ''}` : '-';
+
+            // Avoid duplicates
+            if (!state.foundMatchingPeople.some(p => p.name === name)) {
+                state.foundMatchingPeople.push({
+                    name: name,
+                    age: ageText,
+                    cleared: false // Mark as pending initially
+                });
+            }
+        }
     }
     state.stats.total = matchingTotal;
+    saveState(); // Persist the list immediately
 
     // Work from BOTTOM UP
     state.stats.processed = 0;

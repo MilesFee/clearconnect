@@ -277,10 +277,32 @@ function updatePeopleList(state) {
     // But "still showing all cleared connections on the status page" -> That's the history list (handled elsewhere)
 
     const hasPeople = foundPeople.length > 0;
-    const itemsWrapper = document.getElementById('people-list-wrapper');
+    // Use listContainer itself as the wrapper since it has overflow-y: auto in CSS
+    let itemsWrapper = listContainer;
     const queueCount = document.getElementById('queue-count');
 
-    if (listContainer && itemsWrapper) {
+    // LAZY INJECTION: If container is missing but we have people (e.g. switching modes), create it.
+    if (!listContainer && hasPeople) {
+        const div = document.createElement('div');
+        div.id = 'people-list-container';
+        div.className = 'people-list phase-hidden';
+        div.innerHTML = `
+            <h4 class="list-title">Connections to Clear</h4>
+            <ul id="people-list-items" class="people-list-items"></ul>
+        `;
+        const actions = document.querySelector('.progress-actions');
+        if (actions) {
+            actions.parentNode.insertBefore(div, actions);
+        } else {
+            const view = document.querySelector('.view');
+            if (view) view.appendChild(div);
+        }
+        listContainer = div;
+        // Re-assign wrapper
+        itemsWrapper = listContainer;
+    }
+
+    if (listContainer) {
         // Strict Hide on Idle/Success (Fixes "not hidden" bug)
         if (state.subMode === 'idle' || state.uiNavigation?.currentTab === 'completed') {
             listContainer.classList.add('phase-hidden');
@@ -293,9 +315,8 @@ function updatePeopleList(state) {
         if (isWithdrawing && hasPeople) {
             listContainer.classList.remove('phase-hidden');
             // Ensure wrapper is open by default when running
-            // Fix: Increase max-height to avoid "one line" bug
-            // User requested ~5 items. Each item is ~40px. 5 * 40 = 200px.
-            itemsWrapper.style.maxHeight = '220px';
+            // Fix: Remove max-height constraint for full-height side panel
+            listContainer.style.maxHeight = 'none'; // Ensure CSS takes over
         } else {
             listContainer.classList.add('phase-hidden');
         }
@@ -356,133 +377,101 @@ function updatePeopleList(state) {
 
 
 async function renderUI(state) {
-    // 0. Shell & Footer Updates (Always safe)
-    renderShell(state);
-    const footerStatus = document.getElementById('footer-status');
-    if (footerStatus) footerStatus.innerHTML = getFooterStatusHTML(state);
+    if (!state) state = { ...DEFAULT_STATE };
 
-    // 1. DOM References
-    const resultsSection = document.getElementById('results-section');
-    const homeSection = document.getElementById('home-section');
+    // 1. Transient Page Status Check (Early Exit only for terminal errors)
+    if (pageStatus !== 'ok' && pageStatus !== undefined) {
+        document.getElementById('error-section').classList.remove('hidden');
+        document.getElementById('error-section').innerHTML =
+            pageStatus === 'offPlatform' ? getOffPlatformHTML(state) :
+                pageStatus === 'wrongPage' ? getWrongPageHTML(state) :
+                    getConnectionErrorHTML(state);
 
-    // 2. Transient State Checks (Blocking / Errors)
-    // Checks standard vars: pageStatus is passed in or derived? 
-    // In original code, pageStatus was a scoped variable in renderUI or global? 
-    // It was global or passed. Let's assume global/outer scope or we need to re-check.
-    // Original code: checkPage() set a local variable or we used chrome.tabs query.
-    // Let's rely on state.pageStatus if it exists, or re-implement the check helper if needed.
-    // For now, let's assume we handle normal flow. If we need error views, we inject into homeSection.
-
-    // 3. State-Based View Toggling
-    const isRunning = state.isRunning;
-    const currentTab = state.uiNavigation?.currentTab || 'home';
-    const subMode = state.subMode;
-
-    const processSection = document.getElementById('process-section');
-    const errorSection = document.getElementById('error-section');
-
-    const hideAll = () => {
-        [processSection, resultsSection, homeSection, errorSection].forEach(el => {
-            if (el) {
-                el.classList.add('hidden');
-                el.classList.remove('fade-out', 'slide-up', 'fade-in'); // Clean slate
-            }
+        // Hide others on terminal error
+        ['process-section', 'results-section', 'home-section', 'dashboard-section'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.classList.add('hidden');
         });
-    };
-
-    // 2. Blocking Page Status Check (Transient)
-    if (pageStatus !== 'ok') {
-        hideAll();
-        if (errorSection) {
-            errorSection.classList.remove('hidden');
-            switch (pageStatus) {
-                case 'offPlatform':
-                    errorSection.innerHTML = getOffPlatformHTML(state);
-                    break;
-                case 'wrongPage':
-                    errorSection.innerHTML = getWrongPageHTML(state);
-                    break;
-                case 'connectionError':
-                    errorSection.innerHTML = getConnectionErrorHTML(state);
-                    break;
-            }
-        }
         return;
     }
 
-    if (isRunning) {
-        // --- RUNNING STATE ---
-        hideAll();
+    // 2. Static UI: Ensure main components are visible
+    const processSection = document.getElementById('process-section');
+    const resultsSection = document.getElementById('results-section');
+    const homeSection = document.getElementById('home-section');
+    const dashboardSection = document.getElementById('dashboard-section');
+    const errorSection = document.getElementById('error-section');
+    const playerBar = document.getElementById('player-bar');
+
+    if (errorSection) errorSection.classList.add('hidden');
+
+    // 3. Navigation Logic
+    const currentTab = state.uiNavigation?.currentTab || 'home';
+    const isRunning = state.isRunning;
+
+    // Show/Hide Sections based on "Static" vs "Modal" views
+    // For this extension, "Static" means Progress and List are always there if NOT on Settings/Dashboard?
+    // User: "ensure the extension has a consistently visible UI with four key elements... always present"
+
+    if (currentTab === 'settings') {
+        if (homeSection) {
+            homeSection.classList.remove('hidden');
+            homeSection.innerHTML = getSettingsHTML(state);
+        }
+        if (processSection) processSection.classList.add('hidden');
+        if (resultsSection) resultsSection.classList.add('hidden');
+        if (dashboardSection) dashboardSection.classList.add('hidden');
+    } else if (currentTab === 'dashboard') {
+        if (dashboardSection) {
+            dashboardSection.classList.remove('hidden');
+            // Data Hydration for Dashboard
+            chrome.storage.local.get(['withdrawalHistory', 'extension_state']).then(({ withdrawalHistory, extension_state }) => {
+                const history = withdrawalHistory || []; // withdrawalHistory is the array itself or object? 
+                // Based on recordWithdrawal, it's the array.
+                dashboardSection.innerHTML = getDashboardHTML(extension_state, history);
+            });
+        }
+        if (homeSection) homeSection.classList.add('hidden');
+        if (processSection) processSection.classList.add('hidden');
+        if (resultsSection) resultsSection.classList.add('hidden');
+    } else {
+        // HOME / PROGRESS / COMPLETED
+        if (homeSection) {
+            homeSection.classList.remove('hidden');
+            if (currentTab === 'completed') {
+                homeSection.innerHTML = getCompletedHTML(state);
+            } else {
+                homeSection.innerHTML = getHomeHTML(state);
+            }
+        }
+
+        // STATIC ELEMENTS: Always reveal during normal flow
         if (processSection) {
             processSection.classList.remove('hidden');
-            // Only inject HTML on first render; subsequent ticks use differential updates
-            const alreadyRendered = processSection.querySelector('#progress-layout-standard, #progress-layout-message');
-            if (!alreadyRendered) {
+            if (!processSection.querySelector('.progress-layout')) {
                 processSection.innerHTML = getProgressHTML(state);
             }
-            // Run incremental updates (progress bars, people list, buttons)
             updateProgress(state);
         }
-    }
-    else {
-        // --- IDLE STATE ---
-        if (currentTab === 'completed') {
-            // Results View (Strict SPA)
-            hideAll();
 
-            // Show Results Section
-            if (resultsSection) {
-                resultsSection.classList.remove('hidden');
-                resultsSection.classList.add('fade-in');
-
-                // Always re-render to ensure state consistency
-                resultsSection.innerHTML = getCompletedHTML(state);
-            }
-
-            document.body.classList.add('results-active');
-        }
-        else {
-            document.body.classList.remove('results-active');
-            // --- Standard Views (Home, Settings, etc) ---
-            hideAll();
-            if (homeSection) {
-                homeSection.classList.remove('hidden');
-
-                // Inject content
-                if (currentTab === 'settings') {
-                    homeSection.innerHTML = getSettingsHTML(state);
-                } else if (currentTab === 'history') {
-                    // Async History
-                    chrome.storage.local.get('withdrawalHistory').then(({ withdrawalHistory }) => {
-                        homeSection.innerHTML = getHistoryHTML(state, withdrawalHistory || []);
-                    });
-                } else if (currentTab === 'stats') {
-                    // Async Stats
-                    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-                        if (tab?.id) {
-                            chrome.tabs.sendMessage(tab.id, { action: 'GET_PENDING_COUNT' })
-                                .then(response => {
-                                    homeSection.innerHTML = getStatsHTML(state, response?.count);
-                                })
-                                .catch(() => {
-                                    homeSection.innerHTML = getStatsHTML(state, null);
-                                });
-                        } else {
-                            homeSection.innerHTML = getStatsHTML(state, null);
-                        }
-                    });
-                } else {
-                    // Default Home
-                    homeSection.innerHTML = getHomeHTML(state);
-                }
-            }
+        if (resultsSection) {
+            resultsSection.classList.remove('hidden');
+            // Ensure child items are rendered if they exist in state
+            updatePeopleList(state);
         }
     }
 
-    // Auto-Scroll helper (if list exists)
-    const activePerson = document.querySelector('.person-item.active');
-    if (activePerson) {
-        activePerson.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // 4. Footer Updates
+    if (playerBar) {
+        playerBar.classList.remove('hidden');
+        playerBar.innerHTML = getPlayerBarHTML(state);
+    }
+
+    // Body state for results
+    if (currentTab === 'completed') {
+        document.body.classList.add('results-active');
+    } else {
+        document.body.classList.remove('results-active');
     }
 }
 
@@ -493,7 +482,7 @@ async function navigateTo(tab) {
     const state = extension_state || { ...DEFAULT_STATE };
 
     // Block navigation if running (except to progress)
-    if (state.isRunning && tab !== 'progress' && tab !== 'home') {
+    if (state.isRunning && tab !== 'progress' && tab !== 'home' && tab !== 'dashboard') {
         return;
     }
 
@@ -503,6 +492,184 @@ async function navigateTo(tab) {
 
 // ============ TEMPLATE FUNCTIONS ============
 
+function getDashboardHTML(state, history = [], liveStats = null) {
+    // Safely handle history input - User confirmed it is an array
+    const validHistory = Array.isArray(history) ? history : (history?.withdrawalHistory || []);
+
+    // --- Stats Logic ---
+    const stats = state?.stats || {};
+    const alltimeCleared = stats.alltimeCleared || 0;
+    const lastRun = stats.processed || 0;
+    const oldestCleared = stats.oldestCleared || '-';
+
+    // Limits
+    const maxCapacity = 1200;
+
+    // Resolve Pending Count
+    let pendingCount = liveStats;
+    let dataSource = 'Live';
+    if (pendingCount === null && stats.pendingInvitations !== null) {
+        pendingCount = stats.pendingInvitations;
+        dataSource = 'Cached';
+    }
+
+    const hasData = pendingCount !== null;
+    const displayPending = hasData ? pendingCount : '---';
+    const capacityPercent = hasData ? Math.round((pendingCount / maxCapacity) * 100) : 0;
+
+    // Health color
+    let healthColor = 'green';
+    if (capacityPercent >= 80) healthColor = 'red';
+    else if (capacityPercent >= 50) healthColor = 'yellow';
+
+    let statusText = 'Open LinkedIn Sent Invitations to see count';
+    if (hasData) {
+        if (dataSource === 'Live') statusText = 'Live count from LinkedIn page';
+        else statusText = 'Last known count';
+    }
+
+    // --- History Logic ---
+    let historyListHTML = '';
+    if (!validHistory || validHistory.length === 0) {
+        historyListHTML = '<div class="empty-state">No history yet.</div>';
+    } else {
+        // Render sessions in reverse chronological order (Full Fidelity)
+        historyListHTML = validHistory.slice().reverse().map((session, index) => {
+            const withdrawals = session.withdrawals || [];
+            const isExpanded = index === 0; // First session expanded by default
+            const withdrawalItems = withdrawals.map(w => {
+                const profileLink = w.profileUrl
+                    ? `<a href="${w.profileUrl}" target="_blank" class="history-link">${w.name || 'Unknown'}</a>`
+                    : `<span>${w.name || 'Unknown'}</span>`;
+                return `
+                <div class="history-entry">
+                    ${profileLink}
+                    <span class="history-age">${w.age || ''}</span>
+                </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="history-session ${isExpanded ? 'expanded' : 'collapsed'}">
+                    <div class="history-session-header" data-action="toggle-session" style="cursor: pointer;">
+                        <div class="session-header-left">
+                            <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                            <span class="session-date">${session.sessionDate || session.sessionId}</span>
+                        </div>
+                        <span class="session-count">${withdrawals.length} withdrawn</span>
+                    </div>
+                    <div class="history-session-items">
+                        ${withdrawalItems}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    return `
+        <div class="view dashboard-view">
+            <h2 class="section-title">Dashboard</h2>
+            
+            <div class="dashboard-content-wrapper">
+                <!-- Restored Stats Section -->
+                <div class="stats-section">
+                    <div class="stat-row">
+                        <span>All-Time Cleared</span>
+                        <strong>${alltimeCleared}</strong>
+                    </div>
+                    <div class="stat-row">
+                        <span>Last Run</span>
+                        <strong>${lastRun}</strong>
+                    </div>
+                    <div class="stat-row">
+                        <span>Last Cleared</span>
+                        <strong>${oldestCleared}</strong>
+                    </div>
+                    
+                    <!-- Capacity Health Bar -->
+                    <div class="health-section">
+                        <div class="health-label-row">
+                            <span>Pending Invitations</span>
+                            <span>${displayPending} / ${maxCapacity}</span>
+                        </div>
+                        <div class="health-bar-bg">
+                            <div class="health-bar-fill ${healthColor}" style="width: ${capacityPercent}%"></div>
+                        </div>
+                        <p class="health-text">${statusText}</p>
+                    </div>
+                </div>
+
+                <!-- Restored History Section -->
+                <h3 class="list-title" style="margin-top: 24px; margin-bottom: 12px;">Withdrawal History</h3>
+                <div class="people-list" style="overflow: visible;"> 
+                    <!-- Note: people-list class used for consistent styling, but content is custom -->
+                    ${historyListHTML}
+                </div>
+
+                <button data-action="go-home" class="secondary-btn" style="margin-top: 16px;">Back to Home</button>
+            </div>
+        </div>
+    `;
+}
+
+function getPlayerBarHTML(state) {
+    const isRunning = state?.isRunning || false;
+    const isPaused = state?.isPaused || false;
+    const subMode = state?.subMode || 'idle';
+    const progress = state?.status?.progress || 0;
+    const statusText = state?.status?.text || 'Ready';
+
+    // 1. Idle State
+    if (!isRunning) {
+        return `
+            <div class="player-info">
+                <span class="player-status">Ready to Clear</span>
+                <div class="player-subtext">Standing by</div>
+            </div>
+            <div class="player-controls">
+                <button class="control-btn" data-action="navigate-home" title="Home">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+                </button>
+            </div>
+        `;
+    }
+
+    // 2. Running State
+    let icon = isPaused ?
+        '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>' :
+        '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>';
+
+    let action = isPaused ? 'resume' : 'pause'; // Logic for button click
+
+    // Status Display
+    let displayStatus = statusText;
+    if (subMode === 'scanning') displayStatus = `Scanning... ${Math.round(progress)}%`;
+    if (subMode === 'withdrawing') displayStatus = `Withdrawing... ${Math.round(progress)}%`;
+
+    return `
+        <div class="player-progress-container">
+            <div class="player-progress-bar" style="width: ${progress}%"></div>
+        </div>
+        <div class="player-info">
+            <span class="player-status">${displayStatus}</span>
+            <div class="player-subtext">
+                ${isPaused ? '<span style="color:var(--warning)">Paused</span>' : '<span style="color:var(--success)">Running</span>'}
+            </div>
+        </div>
+        <div class="player-controls">
+            ${subMode === 'withdrawing' ? `
+            <button class="control-btn" data-action="toggle-pause" title="${isPaused ? 'Resume' : 'Pause'}">
+                ${icon}
+            </button>
+            ` : ''}
+            <button class="control-btn primary" data-action="stop-operation" title="Stop">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+            </button>
+        </div>
+    `;
+}
 function getHomeHTML(state) {
     const mode = state?.currentMode || 'count';
     const safeThreshold = state?.settings?.safeThreshold || localSettings.safeThreshold || 1;
@@ -519,6 +686,7 @@ function getHomeHTML(state) {
 
     return `
         <div class="view">
+            <div class="view-content-centered">
             <!-- Safe Mode Notice -->
             <div id="safe-badge" class="safe-notice" style="display: ${safeBadgeDisplay}">
                 Preserves connections sent within the last 
@@ -579,6 +747,7 @@ function getHomeHTML(state) {
                 <div class="home-alltime">
                     <span id="home-alltime-count">${alltimeCleared}</span> connections cleared all-time
                 </div>
+            </div>
         </div>
     `;
 }
@@ -672,7 +841,7 @@ function getProgressHTML(state) {
     const peopleListHTML = foundPeople.length > 0 ? `
         <div id="people-list-container" class="people-list ${isWithdrawing ? 'visible' : 'hidden'}">
             <h4 class="list-title">Connections to Clear</h4>
-            <ul class="people-list-items">
+            <ul id="people-list-items" class="people-list-items">
                 ${foundPeople.map((person, idx) => {
         const isCleared = person.cleared || idx < currentIndex;
         const isActive = !isCleared && idx === currentIndex && isWithdrawing;
@@ -697,20 +866,12 @@ function getProgressHTML(state) {
             
             ${peopleListHTML}
             
-            <!--Action Buttons-->
-                <div class="progress-actions" style="display: flex; gap: 8px; margin-top: 12px;">
-                    ${isWithdrawing ? `
-                    <button data-action="toggle-pause" class="secondary-btn" style="flex: 1;">
-                        <span class="btn-text">${isPaused ? 'Resume' : 'Pause'}</span>
-                    </button>
-                ` : ''}
-                    <button data-action="stop-operation" class="secondary-btn" style="flex: 1;">
-                        <span class="btn-text">Stop</span>
-                    </button>
-                </div>
+            ${peopleListHTML}
         </div>
     `;
 }
+
+/* Old Sticky Actions removed */
 
 function getCompletedHTML(state) {
     const processed = state?.stats?.processed || 0;
@@ -789,6 +950,7 @@ function getCompletedHTML(state) {
 
     return `
         <div id="completed-view" class="view">
+            <div class="view-content-centered">
             <!-- Summary Card -->
             <div class="summary-card" style="background:var(--bg-card); border:1px solid var(--border-default); border-radius:12px; padding:20px; text-align:center; margin-bottom:20px; box-shadow:var(--shadow-sm);">
                 <div class="summary-icon ${statusClass}" style="width:48px; height:48px; border-radius:50%; background:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : 'danger'}-bg); color:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : 'danger'}); display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 12px auto;">
@@ -896,6 +1058,7 @@ function getCompletedHTML(state) {
             </div>
 
             <button data-action="go-home" class="secondary-btn" style="margin-top:12px; width:100%;">Back to Home</button>
+            </div>
         </div>
     `;
 }
@@ -975,147 +1138,19 @@ function getSettingsHTML(state) {
     `;
 }
 
-function getStatsHTML(state, livePendingCount = null) {
-    const stats = state?.stats || {};
-
-    // Read alltimeCleared from state (stored in extension_state.stats)
-    const alltimeCleared = stats.alltimeCleared || 0;
-    const oldestCleared = stats.oldestCleared || '-';
-    const lastRun = stats.processed || 0;
-
-    // LinkedIn limits pending invitations to ~1,200
-    const maxCapacity = 1200;
-
-    // Priority: live page query > stored value from last withdrawal
-    let pendingCount = livePendingCount;
-    let dataSource = 'Live';
-
-    if (pendingCount === null && stats.pendingInvitations !== null) {
-        // Use stored value if no live data
-        pendingCount = stats.pendingInvitations;
-        dataSource = 'Last known';
-    }
-
-    const hasData = pendingCount !== null;
-    const displayPending = hasData ? pendingCount : '---';
-    const capacityPercent = hasData ? Math.round((pendingCount / maxCapacity) * 100) : 0;
-
-    // Health bar color: green < 50%, yellow 50-80%, red > 80%
-    let healthColor = 'green';
-    if (capacityPercent >= 80) healthColor = 'red';
-    else if (capacityPercent >= 50) healthColor = 'yellow';
-
-    // Format timestamp if we have stored data
-    let statusText = 'Open LinkedIn Sent Invitations to see count';
-    if (hasData) {
-        if (dataSource === 'Live') {
-            statusText = 'Live count from LinkedIn page';
-        } else if (stats.pendingUpdatedAt) {
-            const ago = Math.round((Date.now() - stats.pendingUpdatedAt) / 60000);
-            statusText = ago < 1 ? 'Updated just now' : `Updated ${ago}m ago`;
-        } else {
-            statusText = 'Last known count';
-        }
-    }
-
-    return `
-        <div class="view">
-            <h3>Statistics</h3>
-            
-            <div class="stats-section">
-                <div class="stat-row">
-                    <span>All-Time Cleared</span>
-                    <strong>${alltimeCleared}</strong>
-                </div>
-                <div class="stat-row">
-                    <span>Last Run</span>
-                    <strong>${lastRun}</strong>
-                </div>
-                <div class="stat-row">
-                    <span>Last Cleared</span>
-                    <strong>${oldestCleared}</strong>
-                </div>
-                
-                <!-- Capacity Health Bar -->
-                <div class="health-section">
-                    <div class="health-label-row">
-                        <span>Pending Invitations</span>
-                        <span>${displayPending} / ${maxCapacity}</span>
-                    </div>
-                    <div class="health-bar-bg">
-                        <div class="health-bar-fill ${healthColor}" style="width: ${capacityPercent}%"></div>
-                    </div>
-                    <p class="health-text">${statusText}</p>
-                </div>
-            </div>
-
-            <button data-action="go-home" class="secondary-btn" style="margin-top: 12px;">Back</button>
-        </div>
-    `;
-}
-
-function getHistoryHTML(state, withdrawalHistory = []) {
-    let historyContent = '';
-
-    if (withdrawalHistory.length === 0) {
-        historyContent = '<p class="empty-history">No withdrawals recorded yet.</p>';
-    } else {
-        // Render sessions in reverse chronological order
-        const sessions = [...withdrawalHistory].reverse();
-        historyContent = sessions.map((session, index) => {
-            const withdrawals = session.withdrawals || [];
-            const isExpanded = index === 0; // First session expanded by default
-            const withdrawalItems = withdrawals.map(w => {
-                const profileLink = w.profileUrl
-                    ? `<a href="${w.profileUrl}" target="_blank" class="history-link">${w.name || 'Unknown'}</a>`
-                    : `<span>${w.name || 'Unknown'}</span>`;
-                return `
-                <div class="history-entry">
-                    ${profileLink}
-                    <span class="history-age">${w.age || ''}</span>
-                </div>
-                `;
-            }).join('');
-
-            return `
-                <div class="history-session ${isExpanded ? 'expanded' : 'collapsed'}">
-                    <div class="history-session-header" data-action="toggle-session">
-                        <div class="session-header-left">
-                            <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="6 9 12 15 18 9"></polyline>
-                            </svg>
-                            <span class="session-date">${session.sessionDate || session.sessionId}</span>
-                        </div>
-                        <span class="session-count">${withdrawals.length} withdrawn</span>
-                    </div>
-                    <div class="history-session-items">
-                        ${withdrawalItems}
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    return `
-        <div class="view">
-            <h2 class="section-title">Withdrawal History</h2>
-            <div id="history-content" class="history-content">
-                ${historyContent}
-            </div>
-            <button data-action="go-home" class="secondary-btn">Back</button>
-        </div>
-    `;
-}
+/* Old Stats/History functions removed - merged into getDashboardHTML */
 
 function getScanResultsHTML(state) {
     return `
         <div class="view">
+            <div class="view-content-centered">
             <h2 class="section-title">Scan Results</h2>
             <p class="scan-desc">Select message groups to withdraw.</p>
             <div id="scan-results-list" class="scan-results-list"></div>
             <div class="scan-actions">
                 <button data-action="withdraw-selected" class="primary-btn" disabled>Withdraw Selected (<span id="selected-count">0</span>)</button>
                 <button data-action="go-home" class="secondary-btn">Cancel</button>
+            </div>
             </div>
         </div>
     `;
@@ -1124,15 +1159,17 @@ function getScanResultsHTML(state) {
 function getWrongPageHTML(state) {
     return `
         <div class="view">
-            <div class="message-box">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ff9800" stroke-width="2">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="8" x2="12" y2="12" />
-                    <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-                <h2 id="wrong-page-title">Wrong Page</h2>
-                <p id="wrong-page-msg">Please navigate to the Sent Invitations page.</p>
-                <button data-action="open-sent-page" class="primary-btn">Open Sent Invitations</button>
+            <div class="view-content-centered">
+                <div class="message-box">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ff9800" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="8" x2="12" y2="12" />
+                        <line x1="12" y1="16" x2="12.01" y2="16" />
+                    </svg>
+                    <h2 id="wrong-page-title">Wrong Page</h2>
+                    <p id="wrong-page-msg">Please navigate to the Sent Invitations page.</p>
+                    <button data-action="open-sent-page" class="primary-btn">Open Sent Invitations</button>
+                </div>
             </div>
         </div>
     `;
@@ -1141,15 +1178,17 @@ function getWrongPageHTML(state) {
 function getOffPlatformHTML(state) {
     return `
         <div class="view">
-            <div class="message-box">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#2196f3" stroke-width="2">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                    <polyline points="15 3 21 3 21 9" />
-                    <line x1="10" y1="14" x2="21" y2="3" />
-                </svg>
-                <h2>Off Platform</h2>
-                <p>ClearConnect works on LinkedIn. Open the Sent Invitations page to get started.</p>
-                <button data-action="open-sent-page" class="primary-btn">Open LinkedIn</button>
+            <div class="view-content-centered">
+                <div class="message-box">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#2196f3" stroke-width="2">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" />
+                        <line x1="10" y1="14" x2="21" y2="3" />
+                    </svg>
+                    <h2>Off Platform</h2>
+                    <p>ClearConnect works on LinkedIn. Open the Sent Invitations page to get started.</p>
+                    <button data-action="open-sent-page" class="primary-btn">Open LinkedIn</button>
+                </div>
             </div>
         </div>
     `;
@@ -1158,15 +1197,17 @@ function getOffPlatformHTML(state) {
 function getConnectionErrorHTML(state) {
     return `
         <div class="view">
-            <div class="message-box">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#f44336" stroke-width="2">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="15" y1="9" x2="9" y2="15" />
-                    <line x1="9" y1="9" x2="15" y2="15" />
-                </svg>
-                <h2>Connection Lost</h2>
-                <p>The connection to the page was interrupted. Please refresh to restore functionality.</p>
-                <button data-action="refresh-connection" class="primary-btn">Refresh Page</button>
+            <div class="view-content-centered">
+                <div class="message-box">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#f44336" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="15" y1="9" x2="9" y2="15" />
+                        <line x1="9" y1="9" x2="15" y2="15" />
+                    </svg>
+                    <h2>Connection Lost</h2>
+                    <p>The connection to the page was interrupted. Please refresh to restore functionality.</p>
+                    <button data-action="refresh-connection" class="primary-btn">Refresh Page</button>
+                </div>
             </div>
         </div>
     `;
@@ -1196,7 +1237,7 @@ function getModeDescription(mode, settings) {
 function setupEventDelegation() {
     // Header buttons (outside app-root)
     document.addEventListener('click', async (e) => {
-        const target = e.target.closest('[data-action]') || e.target.closest('#settings-btn, #stats-btn, #history-btn, #logo-btn');
+        const target = e.target.closest('[data-action]') || e.target.closest('#settings-btn, #dashboard-btn, #logo-btn');
         if (!target) return;
 
         // Header nav buttons (by ID)
@@ -1205,14 +1246,9 @@ function setupEventDelegation() {
             navigateTo('settings');
             return;
         }
-        if (target.id === 'stats-btn') {
+        if (target.id === 'dashboard-btn') {
             e.preventDefault();
-            navigateTo('stats');
-            return;
-        }
-        if (target.id === 'history-btn') {
-            e.preventDefault();
-            navigateTo('history');
+            navigateTo('dashboard');
             return;
         }
         if (target.id === 'logo-btn') {
@@ -1330,6 +1366,34 @@ async function handleAction(action, target) {
                 chrome.tabs.reload(activeTabId);
             }
             window.close();
+        // Refresh connection (stale popup/content script)
+        case 'refresh-connection':
+            if (activeTabId) {
+                chrome.tabs.reload(activeTabId);
+            }
+            window.close();
+            break;
+
+        // Toggle History Session (Accordion)
+        case 'toggle-session':
+            const sessionEl = target.closest('.history-session');
+            if (sessionEl) {
+                const wasExpanded = sessionEl.classList.contains('expanded');
+                // Close all others (optional - mimics accordion)
+                // document.querySelectorAll('.history-session').forEach(el => {
+                //    el.classList.remove('expanded');
+                //    el.classList.add('collapsed');
+                // });
+
+                // Toggle current
+                if (wasExpanded) {
+                    sessionEl.classList.remove('expanded');
+                    sessionEl.classList.add('collapsed');
+                } else {
+                    sessionEl.classList.remove('collapsed');
+                    sessionEl.classList.add('expanded');
+                }
+            }
             break;
     }
 }
@@ -1421,7 +1485,7 @@ async function startOperation(options = {}) {
 async function startScan() {
     if (!activeTabId) return;
     try {
-        await chrome.tabs.sendMessage(activeTabId, { action: 'START_SCAN' });
+        await chrome.tabs.sendMessage(activeTabId, { action: 'SCAN_CONNECTIONS' });
     } catch (e) {
         console.log('Content script not ready:', e);
     }
@@ -1509,19 +1573,30 @@ function openSentPage() {
 // ============ INITIALIZATION ============
 
 // Check page and set transient pageStatus variable (NEVER persists to storage)
+// Check page and set transient pageStatus variable (NEVER persists to storage)
 async function checkPage() {
     try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        activeTabId = tab?.id;
+        // In Side Panel, 'currentWindow: true' refers to the side panel itself (which has no tabs).
+        // We need to query for the active tab in the *last focused* window.
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+
+        // Robust check for undefined tab
+        if (!tab || !tab.id) {
+            console.log('ClearConnect: No active tab found');
+            pageStatus = 'connectionError';
+            return;
+        }
+
+        activeTabId = tab.id;
 
         // Not on LinkedIn at all
-        if (!tab?.url?.includes('linkedin.com')) {
+        if (!tab.url || !tab.url.includes('linkedin.com')) {
             pageStatus = 'offPlatform';
             return;
         }
 
         // On LinkedIn but wrong page
-        if (!tab?.url?.includes('mynetwork/invitation-manager/sent')) {
+        if (!tab.url.includes('mynetwork/invitation-manager/sent')) {
             pageStatus = 'wrongPage';
             return;
         }
@@ -1541,6 +1616,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Setup event delegation first
     setupEventDelegation();
 
+    // DEBUG: Log all storage to find where history is hiding
+    chrome.storage.local.get(null, (items) => {
+        console.log('🔴 FULL STORAGE DUMP:', items);
+        if (items.history) console.log('🔴 History Object:', items.history);
+        if (items.stats) console.log('🔴 Stats Object:', items.stats);
+    });
+
+    // Load saved settings
+    const settings = await getSettings();
+
     // Load local settings
     const saved = await chrome.storage.local.get(DEFAULTS);
     localSettings = { ...DEFAULTS, ...saved };
@@ -1548,13 +1633,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Check page status (sets transient pageStatus variable)
     await checkPage();
 
-    // ALWAYS render - pageStatus check happens inside renderUI
+    // ALWAYS render - pageStatus check    // 4. Initial Render
     try {
         const { extension_state } = await chrome.storage.local.get('extension_state');
-        renderUI(extension_state || DEFAULT_STATE);
+        // Ensure we always render even if state is null
+        renderUI(extension_state || { ...DEFAULT_STATE });
     } catch (e) {
-        console.error('ClearConnect: Failed to load state', e);
-        renderUI(DEFAULT_STATE);
+        console.warn('ClearConnect: Render fallback', e);
+        renderUI({ ...DEFAULT_STATE });
     }
 });
 
