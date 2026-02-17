@@ -1080,8 +1080,10 @@ function updateStatus(text, progress, clearedData = null, partialResults = null)
         } else {
             state.sessionLog.push({ ...clearedData, timestamp: Date.now() });
 
-            // Increment alltimeCleared for new withdrawals
-            state.stats.alltimeCleared = (state.stats.alltimeCleared || 0) + 1;
+            // Increment alltimeCleared for new withdrawals (ONLY IN LIVE MODE)
+            if (!state.settings.debugMode) {
+                state.stats.alltimeCleared = (state.stats.alltimeCleared || 0) + 1;
+            }
 
             // Add to sessionCleared for persistent Results list
             if (!state.sessionCleared) state.sessionCleared = [];
@@ -1124,6 +1126,9 @@ function updateStatus(text, progress, clearedData = null, partialResults = null)
 
 // Record withdrawal to history storage
 async function recordWithdrawal(name, profileUrl, age, project = null) {
+    // SECURITY: Do not record history in Debug Mode
+    if (state.settings.debugMode) return;
+
     try {
         const result = await chrome.storage.local.get(['withdrawalHistory', 'currentSessionId']);
         let history = result.withdrawalHistory || [];
@@ -1186,7 +1191,7 @@ function normalizeMessage(text) {
     let normalized = text.trim();
     // specific patterns to remove: Hi/Hello/Hey [Name]
     // Matches start of string, common greetings, name (up to 40 chars), and terminator
-    normalized = normalized.replace(/^(Hi|Hello|Hey|Dear|Good morning|Good afternoon|Good evening)\s+[\s\S]{1,40}?[:,\!]\s*/i, '');
+    normalized = normalized.replace(/^(Hi|Hello|Hey|Dear|Good morning|Good afternoon|Good evening)\s+[\s\S]{1,40}?[:,\!\-\u2013\u2014]\s*/i, '');
 
     // Normalize currency: Replace $100, $1,000, $50.00 with [AMOUNT]
     normalized = normalized.replace(/\$\d+(?:,\d{3})*(?:\.\d+)?/g, '[AMOUNT]');
@@ -1420,7 +1425,7 @@ async function scanConnections() {
 
     state.isRunning = false;
     state.subMode = 'idle';
-    broadcastState('SCAN_COMPLETE');
+    broadcastState('STATE_UPDATE');
 }
 
 function showConnection(hash) {
@@ -1460,17 +1465,32 @@ function showConnection(hash) {
 // Withdraw selected groups
 async function withdrawSelected(selectedHashes) {
     state.subMode = 'withdrawing';
+    state.sessionCleared = []; // Reset session cleared list for new run
     const targetHashes = new Set(selectedHashes);
     const buttons = findWithdrawButtons(); // Working from existing list (assuming page hasn't changed much, but will verify)
     state.stats.total = buttons.length; // Approximate, effective total is matching count
 
     // Recalculate exact total for selected
     let matchingTotal = 0;
+
+    // Valid selected people list for UI
+    const validPeople = [];
+
     for (const btn of buttons) {
         const msg = normalizeMessage(getConnectionMessage(btn));
-        if (targetHashes.has(hashMessage(msg))) matchingTotal++;
+        if (targetHashes.has(hashMessage(msg))) {
+            matchingTotal++;
+            const name = getPersonName(btn);
+            if (name) {
+                validPeople.push({ name, age: getAge(btn)?.text || '-', message: msg, cleared: false });
+            }
+        }
     }
     state.stats.total = matchingTotal;
+
+    // Reverse the list so it matches the processing order (Last button = First processed = Top of list)
+    state.foundMatchingPeople = validPeople.reverse();
+    saveState();
 
     // Work from BOTTOM UP
     state.stats.processed = 0;
