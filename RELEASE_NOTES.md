@@ -1,5 +1,14 @@
 # ClearConnect Release Notes
 
+## Version 2.3.0 - The MVP Release 🚀
+
+This release consolidates all recent UI improvements, safety features, and the new Single Page Application (SPA) architecture into a stable MVP.
+
+### 🌟 Key Highlights
+*   **SPA Architecture:** Improved performance and smoother transitions between views.
+*   **Enhanced Message Mode:** Better grouping and filtering for safe withdrawal of connection requests.
+*   **Visual Polish:** Refined dark mode, consistent button styling, and better progress feedback.
+
 ## Version 2.1.0 - The "Smart Control" Update 🧠
 
 This release brings a major overhaul to the User Interface and introduces powerful new ways to manage your connection withdrawals.
