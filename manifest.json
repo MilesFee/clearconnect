@@ -1,26 +1,30 @@
 {
   "manifest_version": 3,
   "name": "ClearConnect",
-  "version": "2.1.0",
+  "version": "2.3.0",
   "description": "Safely withdraw old LinkedIn connection requests.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "sidePanel",
-    "contextMenus"
+    "sidePanel"
   ],
   "host_permissions": [
     "https://www.linkedin.com/*"
   ],
-  "action": {
-    "default_title": "Open ClearConnect"
-  },
-  "side_panel": {
-    "default_path": "popup.html"
-  },
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "icons": {
     "16": "icons/icon16.png",

@@ -19,7 +19,6 @@ const DEFAULTS = {
     currentMode: 'count',
     safeMode: true,
     theme: 'light',
-    alltimeCleared: 0,
     debugMode: false
 };
 
@@ -30,18 +29,33 @@ const DEFAULT_STATE = {
     currentMode: 'count',
     subMode: 'idle',
     lastError: null,
-    stats: { processed: 0, total: 0, oldestCleared: '-', startTime: null },
+    stats: {
+        processed: 0,
+        total: 0,
+        oldestCleared: '-',
+        startTime: null,
+        pendingInvitations: null,
+        pendingUpdatedAt: null,
+        alltimeCleared: 0
+    },
     settings: { ...DEFAULTS },
     status: { text: 'Ready', progress: 0 },
     sessionLog: [],
+    foundMatchingPeople: [],
+    batchStart: 0,
     uiNavigation: { currentTab: 'home' },
-    lastRunResult: null // { processed, oldestCleared, timestamp } - persists until new run starts
+    lastRunResult: null,
+    sessionCleared: []
 };
 
 // Runtime state (not persisted)
 let activeTabId = null;
 let localSettings = { ...DEFAULTS };
 let pageStatus = 'ok'; // 'ok' | 'offPlatform' | 'wrongPage' | 'connectionError' - transient, not saved
+
+// Scan results state
+let selectedScanHashes = new Set();
+let foundScanResults = [];
 
 // ============ FOOTER STATUS HELPER ============
 // Renders semantic status in footer based on stopType
@@ -84,19 +98,16 @@ function getFooterStatusHTML(state) {
                 break;
         }
 
-        // Link to completed/results view
-        const viewResultsLink = showViewResults
-            ? `<a href="#" id="view-results-link" data-action="navigate" data-tab="completed" class="status-link">View Results</a>`
-            : '';
-
         return `
             <div class="status-box ${cssClass}">
-                <div class="status-icon">${icon}</div>
+                <div class="status-icon-circle ${stopType === 'success' ? 'success' : stopType === 'manual' ? 'error' : 'warning'}">
+                    <div class="status-icon">${icon}</div>
+                </div>
                 <div class="status-content">
                     <strong>${displayMessage}</strong>
                     ${oldestCleared !== '-' ? `<span class="status-detail">Oldest: ${oldestCleared}</span>` : ''}
-                    ${viewResultsLink}
                 </div>
+                <button class="status-close-btn" data-action="close-footer" aria-label="Close message">&times;</button>
             </div>
         `;
     }
@@ -104,15 +115,46 @@ function getFooterStatusHTML(state) {
     // P4: Active Run - no footer status (progress view handles it)
     if (state?.isRunning) return '';
 
-    // P5: Idle + Correct Page - green confirmation
+    // P5: Idle + Correct Page - green confirmation (unless dismissed)
+    if (localSettings.hideReadyStatus) return '';
+
     return `
         <div class="status-box status-confirm">
-            <div class="status-icon">&#10003;</div>
+            <div class="status-icon-circle confirm">
+                <div class="status-icon">&#10003;</div>
+            </div>
             <div class="status-content">
                 <span>You are on the correct page.</span>
             </div>
+            <button class="status-close-btn" data-action="close-footer" aria-label="Close message">&times;</button>
         </div>
     `;
+}
+
+// Show a transient error in the footer (auto-clears after 4s)
+function showFooterError(msg) {
+    const hint = document.getElementById('footer-hint');
+    const errIcon = document.getElementById('footer-icon-error');
+    const footerMsg = document.getElementById('footer-content');
+
+    if (hint) {
+        hint.textContent = msg;
+        hint.style.color = 'var(--status-error, #dc2828)';
+    }
+    if (errIcon) errIcon.style.display = 'inline';
+    if (footerMsg) {
+        footerMsg.classList.add('visible');
+        footerMsg.classList.add('error');
+    }
+
+    setTimeout(() => {
+        if (hint) { hint.textContent = ''; hint.style.color = ''; }
+        if (errIcon) errIcon.style.display = 'none';
+        if (footerMsg) {
+            footerMsg.classList.remove('visible');
+            footerMsg.classList.remove('error');
+        }
+    }, 4000);
 }
 
 // ============ CORE RENDER SYSTEM ============
@@ -121,7 +163,7 @@ function getFooterStatusHTML(state) {
 function renderShell(state) {
     // Apply theme on every render
     const theme = localSettings.theme || 'light';
-    document.body.setAttribute('data-theme', theme);
+    document.documentElement.setAttribute('data-theme', theme);
 
     // Debug mode indicator
     if (localSettings.debugMode) {
@@ -277,32 +319,10 @@ function updatePeopleList(state) {
     // But "still showing all cleared connections on the status page" -> That's the history list (handled elsewhere)
 
     const hasPeople = foundPeople.length > 0;
-    // Use listContainer itself as the wrapper since it has overflow-y: auto in CSS
-    let itemsWrapper = listContainer;
+    const itemsWrapper = document.getElementById('people-list-wrapper');
     const queueCount = document.getElementById('queue-count');
 
-    // LAZY INJECTION: If container is missing but we have people (e.g. switching modes), create it.
-    if (!listContainer && hasPeople) {
-        const div = document.createElement('div');
-        div.id = 'people-list-container';
-        div.className = 'people-list phase-hidden';
-        div.innerHTML = `
-            <h4 class="list-title">Connections to Clear</h4>
-            <ul id="people-list-items" class="people-list-items"></ul>
-        `;
-        const actions = document.querySelector('.progress-actions');
-        if (actions) {
-            actions.parentNode.insertBefore(div, actions);
-        } else {
-            const view = document.querySelector('.view');
-            if (view) view.appendChild(div);
-        }
-        listContainer = div;
-        // Re-assign wrapper
-        itemsWrapper = listContainer;
-    }
-
-    if (listContainer) {
+    if (listContainer && itemsWrapper) {
         // Strict Hide on Idle/Success (Fixes "not hidden" bug)
         if (state.subMode === 'idle' || state.uiNavigation?.currentTab === 'completed') {
             listContainer.classList.add('phase-hidden');
@@ -315,8 +335,9 @@ function updatePeopleList(state) {
         if (isWithdrawing && hasPeople) {
             listContainer.classList.remove('phase-hidden');
             // Ensure wrapper is open by default when running
-            // Fix: Remove max-height constraint for full-height side panel
-            listContainer.style.maxHeight = 'none'; // Ensure CSS takes over
+            // Fix: Increase max-height to avoid "one line" bug
+            // User requested ~5 items. Each item is ~40px. 5 * 40 = 200px.
+            itemsWrapper.style.maxHeight = '220px';
         } else {
             listContainer.classList.add('phase-hidden');
         }
@@ -368,6 +389,82 @@ function updatePeopleList(state) {
             }
         }
     });
+
+}
+
+// Helper: Update Theme Toggle Cursor
+function updateThemeView() {
+    const theme = localSettings.theme || 'light';
+    const cursor = document.querySelector('.theme-cursor');
+    const container = document.querySelector('.slide-toggle--2'); // Identify by modifier or context
+
+    if (container) {
+        container.dataset.selectedIndex = theme === 'light' ? 0 : 1;
+    }
+
+    const themeBtns = document.querySelectorAll('[data-theme]');
+    themeBtns.forEach(btn => {
+        const isActive = btn.dataset.theme === theme;
+        btn.classList.toggle('active', isActive);
+
+        if (isActive && cursor) {
+            cursor.style.width = `${btn.offsetWidth}px`;
+            cursor.style.transform = `translateX(${btn.offsetLeft}px)`;
+        }
+    });
+}
+
+// Helper: Update Home View without re-rendering (prevents flicker)
+function updateHomeView(state) {
+    const mode = state?.currentMode || 'count';
+    const settings = state?.settings || localSettings;
+    const safeThreshold = settings.safeThreshold || 1;
+    const safeUnit = settings.safeUnit || 'month';
+    const safeMode = settings.safeMode !== undefined ? settings.safeMode : (localSettings.safeMode !== false);
+
+    // Update Safe Badge
+    const safeBadge = document.getElementById('safe-badge');
+    if (safeBadge) {
+        safeBadge.style.display = safeMode ? 'block' : 'none';
+        const badgeText = document.getElementById('safe-badge-text');
+        if (badgeText) {
+            badgeText.textContent = `${safeThreshold} ${safeUnit}${safeThreshold > 1 ? 's' : ''}`;
+        }
+    }
+
+    // Update Mode Buttons & Cursor
+    // Update Mode Buttons & Cursor
+    // Mode is tri-state (0, 1, 2)
+    const container = document.querySelector('.slide-toggle--3');
+
+    if (container) {
+        const index = mode === 'count' ? 0 : mode === 'age' ? 1 : 2;
+        container.dataset.selectedIndex = index;
+    }
+
+    const modeBtns = document.querySelectorAll('[data-mode]');
+    modeBtns.forEach(btn => {
+        const isActive = btn.dataset.mode === mode;
+        btn.classList.toggle('active', isActive);
+    });
+
+    // Update Input Sections
+    const countInput = document.getElementById('count-input');
+    if (countInput) countInput.style.display = mode === 'count' ? 'block' : 'none';
+
+    const ageInput = document.getElementById('age-input');
+    if (ageInput) ageInput.style.display = mode === 'age' ? 'block' : 'none';
+
+    const messageInput = document.getElementById('message-input');
+    if (messageInput) messageInput.style.display = mode === 'message' ? 'block' : 'none';
+
+    // Update Description
+    const modeDesc = document.getElementById('mode-desc');
+    if (modeDesc) modeDesc.textContent = getModeDescription(mode, settings);
+
+    // Update Start Button
+    const startBtn = document.querySelector('button[data-action="start-clearing"]');
+    if (startBtn) startBtn.style.display = mode === 'message' ? 'none' : 'block';
 }
 
 /* ==========================================================================
@@ -377,112 +474,186 @@ function updatePeopleList(state) {
 
 
 async function renderUI(state) {
-    if (!state) state = { ...DEFAULT_STATE };
+    // 0. Shell & Footer Updates (Always safe)
+    // 0. Shell & Footer Updates (Always safe)
+    renderShell(state);
 
-    // 1. Transient Page Status Check (Early Exit only for terminal errors)
-    if (pageStatus !== 'ok' && pageStatus !== undefined) {
-        document.getElementById('error-section').classList.remove('hidden');
-        document.getElementById('error-section').innerHTML =
-            pageStatus === 'offPlatform' ? getOffPlatformHTML(state) :
-                pageStatus === 'wrongPage' ? getWrongPageHTML(state) :
-                    getConnectionErrorHTML(state);
+    // NORMALIZE STATE: If in a view that Popup cannot show (side panel views), force Home context for Popup render
+    // This ensures footer status is shown correctly (it hides if tab is 'completed', but Popup mimics Home)
+    if (state.uiNavigation?.currentTab === 'completed' || state.uiNavigation?.currentTab === 'scanResults') {
+        // Create a shallow copy to avoid mutating original state object reference if passed elsewhere
+        state = { ...state, uiNavigation: { ...state.uiNavigation, currentTab: 'home' } };
+    }
 
-        // Hide others on terminal error
-        ['process-section', 'results-section', 'home-section', 'dashboard-section'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.classList.add('hidden');
+    const footerStatus = document.getElementById('footer-status');
+    if (footerStatus) footerStatus.innerHTML = getFooterStatusHTML(state);
+
+    // 1. DOM References
+    const resultsSection = document.getElementById('results-section');
+    const homeSection = document.getElementById('home-section');
+
+    // 2. Transient State Checks (Blocking / Errors)
+    // Checks standard vars: pageStatus is passed in or derived? 
+    // In original code, pageStatus was a scoped variable in renderUI or global? 
+    // It was global or passed. Let's assume global/outer scope or we need to re-check.
+    // Original code: checkPage() set a local variable or we used chrome.tabs query.
+    // Let's rely on state.pageStatus if it exists, or re-implement the check helper if needed.
+    // For now, let's assume we handle normal flow. If we need error views, we inject into homeSection.
+
+    // 3. State-Based View Toggling
+    const isRunning = state.isRunning;
+    const currentTab = state.uiNavigation?.currentTab || 'home';
+    const subMode = state.subMode;
+
+    const processSection = document.getElementById('process-section');
+    const errorSection = document.getElementById('error-section');
+
+    const hideAll = () => {
+        [processSection, resultsSection, homeSection, errorSection].forEach(el => {
+            if (el) {
+                el.classList.add('hidden');
+                el.classList.remove('fade-out', 'slide-up', 'fade-in'); // Clean slate
+            }
         });
+    };
+
+    // 2. Blocking Page Status Check (Transient)
+    if (pageStatus !== 'ok') {
+        hideAll();
+        if (errorSection) {
+            errorSection.classList.remove('hidden');
+            switch (pageStatus) {
+                case 'offPlatform':
+                    errorSection.innerHTML = getOffPlatformHTML(state);
+                    break;
+                case 'wrongPage':
+                    errorSection.innerHTML = getWrongPageHTML(state);
+                    break;
+                case 'connectionError':
+                    errorSection.innerHTML = getConnectionErrorHTML(state);
+                    break;
+            }
+        }
         return;
     }
 
-    // 2. Static UI: Ensure main components are visible
-    const processSection = document.getElementById('process-section');
-    const resultsSection = document.getElementById('results-section');
-    const homeSection = document.getElementById('home-section');
-    const dashboardSection = document.getElementById('dashboard-section');
-    const errorSection = document.getElementById('error-section');
-    const playerBar = document.getElementById('player-bar');
-
-    if (errorSection) errorSection.classList.add('hidden');
-
-    // 3. Navigation Logic
-    const currentTab = state.uiNavigation?.currentTab || 'home';
-    const isRunning = state.isRunning;
-
-    // Show/Hide Sections based on "Static" vs "Modal" views
-    // For this extension, "Static" means Progress and List are always there if NOT on Settings/Dashboard?
-    // User: "ensure the extension has a consistently visible UI with four key elements... always present"
-
-    if (currentTab === 'settings') {
-        if (homeSection) {
-            homeSection.classList.remove('hidden');
-            homeSection.innerHTML = getSettingsHTML(state);
+    if (isRunning) {
+        // --- RUNNING STATE ---
+        hideAll();
+        if (processSection) {
+            processSection.classList.remove('hidden');
+            // Only inject HTML on first render; subsequent ticks use differential updates
+            const alreadyRendered = processSection.querySelector('#progress-layout-standard, #progress-layout-message');
+            if (!alreadyRendered) {
+                processSection.innerHTML = getProgressHTML(state);
+            }
+            // Run incremental updates (progress bars, people list, buttons)
+            updateProgress(state);
         }
-        if (processSection) processSection.classList.add('hidden');
-        if (resultsSection) resultsSection.classList.add('hidden');
-        if (dashboardSection) dashboardSection.classList.add('hidden');
-    } else if (currentTab === 'dashboard') {
-        if (dashboardSection) {
-            dashboardSection.classList.remove('hidden');
-            // Data Hydration for Dashboard
-            chrome.storage.local.get(['withdrawalHistory', 'extension_state']).then(({ withdrawalHistory, extension_state }) => {
-                const history = withdrawalHistory || []; // withdrawalHistory is the array itself or object? 
-                // Based on recordWithdrawal, it's the array.
-                dashboardSection.innerHTML = getDashboardHTML(extension_state, history);
-            });
-        }
-        if (homeSection) homeSection.classList.add('hidden');
-        if (processSection) processSection.classList.add('hidden');
-        if (resultsSection) resultsSection.classList.add('hidden');
-    } else {
-        // HOME / PROGRESS / COMPLETED
-        if (homeSection) {
-            homeSection.classList.remove('hidden');
-            if (currentTab === 'completed') {
-                homeSection.innerHTML = getCompletedHTML(state);
-            } else {
+    }
+    else {
+        // --- IDLE STATE ---
+        if (currentTab === 'completed' || currentTab === 'scanResults') {
+            // FORBIDDEN VIEWS IN POPUP: Redirect to home
+            // We do not save this state change to storage to avoid messing up the side panel,
+            // but we render the home view instead.
+            hideAll();
+            if (homeSection) {
+                homeSection.classList.remove('hidden');
                 homeSection.innerHTML = getHomeHTML(state);
             }
         }
+        else {
+            document.body.classList.remove('results-active');
+            // --- Standard Views (Home, Settings, Scan Results, etc) ---
+            hideAll();
+            if (homeSection) {
+                homeSection.classList.remove('hidden');
 
-        // STATIC ELEMENTS: Always reveal during normal flow
-        if (processSection) {
-            processSection.classList.remove('hidden');
-            if (!processSection.querySelector('.progress-layout')) {
-                processSection.innerHTML = getProgressHTML(state);
+                // Inject content
+                if (currentTab === 'settings') {
+                    homeSection.innerHTML = getSettingsHTML(state);
+                    requestAnimationFrame(updateThemeView);
+                } else if (currentTab === 'history') {
+                    // Async History
+                    chrome.storage.local.get('withdrawalHistory').then(({ withdrawalHistory }) => {
+                        homeSection.innerHTML = getHistoryHTML(state, withdrawalHistory || []);
+                    });
+                } else if (currentTab === 'stats') {
+                    // Async Stats
+                    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+                        if (tab?.id) {
+                            chrome.tabs.sendMessage(tab.id, { action: 'GET_PENDING_COUNT' })
+                                .then(response => {
+                                    homeSection.innerHTML = getStatsHTML(state, response?.count);
+                                })
+                                .catch(async () => {
+                                    // Fallback: Content script might not be loaded yet or crashed. Scrape live.
+                                    try {
+                                        const results = await chrome.scripting.executeScript({
+                                            target: { tabId: tab.id },
+                                            func: () => {
+                                                const navBtn = document.querySelector('nav button[aria-current="true"]');
+                                                let text = navBtn ? navBtn.textContent : '';
+                                                let match = text.match(/People\s*\(([0-9,]+)\)/i);
+                                                if (match) return parseInt(match[1].replace(/,/g, ''), 10);
+
+                                                const spans = document.querySelectorAll('nav span');
+                                                for (const span of spans) {
+                                                    text = span.textContent || '';
+                                                    match = text.match(/People\s*\(([0-9,]+)\)/i);
+                                                    if (match) return parseInt(match[1].replace(/,/g, ''), 10);
+                                                }
+                                                return null;
+                                            }
+                                        });
+                                        const count = results?.[0]?.result;
+                                        homeSection.innerHTML = getStatsHTML(state, count);
+                                    } catch (e) {
+                                        homeSection.innerHTML = getStatsHTML(state, null);
+                                    }
+                                });
+                        } else {
+                            homeSection.innerHTML = getStatsHTML(state, null);
+                        }
+                    });
+                } else {
+                    // Default Home
+                    // Check if we can do a smart update to avoid flicker
+                    if (homeSection.querySelector('#safe-badge') && homeSection.querySelector('.slide-toggle')) {
+                        updateHomeView(state);
+                    } else {
+                        // Full render if empty
+                        homeSection.innerHTML = getHomeHTML(state);
+                        // Initialize cursor position immediately to prevent jump
+                        // We use setTimeout 0 to wait for DOM paint/layout so offsetWidth is correct
+                        requestAnimationFrame(() => updateHomeView(state));
+                    }
+                }
             }
-            updateProgress(state);
-        }
-
-        if (resultsSection) {
-            resultsSection.classList.remove('hidden');
-            // Ensure child items are rendered if they exist in state
-            updatePeopleList(state);
         }
     }
 
-    // 4. Footer Updates
-    if (playerBar) {
-        playerBar.classList.remove('hidden');
-        playerBar.innerHTML = getPlayerBarHTML(state);
-    }
-
-    // Body state for results
-    if (currentTab === 'completed') {
-        document.body.classList.add('results-active');
-    } else {
-        document.body.classList.remove('results-active');
+    // Auto-Scroll helper (if list exists)
+    const activePerson = document.querySelector('.person-item.active');
+    if (activePerson) {
+        activePerson.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 }
 
 
 // Navigate by updating storage (triggers re-render via onChanged)
-async function navigateTo(tab) {
-    const { extension_state } = await chrome.storage.local.get('extension_state');
-    const state = extension_state || { ...DEFAULT_STATE };
+async function navigateTo(tab, passedState = null) {
+    let state;
+    if (passedState) {
+        state = passedState;
+    } else {
+        const { extension_state } = await chrome.storage.local.get('extension_state');
+        state = extension_state || { ...DEFAULT_STATE };
+    }
 
     // Block navigation if running (except to progress)
-    if (state.isRunning && tab !== 'progress' && tab !== 'home' && tab !== 'dashboard') {
+    if (state.isRunning && tab !== 'progress' && tab !== 'home') {
         return;
     }
 
@@ -492,191 +663,13 @@ async function navigateTo(tab) {
 
 // ============ TEMPLATE FUNCTIONS ============
 
-function getDashboardHTML(state, history = [], liveStats = null) {
-    // Safely handle history input - User confirmed it is an array
-    const validHistory = Array.isArray(history) ? history : (history?.withdrawalHistory || []);
-
-    // --- Stats Logic ---
-    const stats = state?.stats || {};
-    const alltimeCleared = stats.alltimeCleared || 0;
-    const lastRun = stats.processed || 0;
-    const oldestCleared = stats.oldestCleared || '-';
-
-    // Limits
-    const maxCapacity = 1200;
-
-    // Resolve Pending Count
-    let pendingCount = liveStats;
-    let dataSource = 'Live';
-    if (pendingCount === null && stats.pendingInvitations !== null) {
-        pendingCount = stats.pendingInvitations;
-        dataSource = 'Cached';
-    }
-
-    const hasData = pendingCount !== null;
-    const displayPending = hasData ? pendingCount : '---';
-    const capacityPercent = hasData ? Math.round((pendingCount / maxCapacity) * 100) : 0;
-
-    // Health color
-    let healthColor = 'green';
-    if (capacityPercent >= 80) healthColor = 'red';
-    else if (capacityPercent >= 50) healthColor = 'yellow';
-
-    let statusText = 'Open LinkedIn Sent Invitations to see count';
-    if (hasData) {
-        if (dataSource === 'Live') statusText = 'Live count from LinkedIn page';
-        else statusText = 'Last known count';
-    }
-
-    // --- History Logic ---
-    let historyListHTML = '';
-    if (!validHistory || validHistory.length === 0) {
-        historyListHTML = '<div class="empty-state">No history yet.</div>';
-    } else {
-        // Render sessions in reverse chronological order (Full Fidelity)
-        historyListHTML = validHistory.slice().reverse().map((session, index) => {
-            const withdrawals = session.withdrawals || [];
-            const isExpanded = index === 0; // First session expanded by default
-            const withdrawalItems = withdrawals.map(w => {
-                const profileLink = w.profileUrl
-                    ? `<a href="${w.profileUrl}" target="_blank" class="history-link">${w.name || 'Unknown'}</a>`
-                    : `<span>${w.name || 'Unknown'}</span>`;
-                return `
-                <div class="history-entry">
-                    ${profileLink}
-                    <span class="history-age">${w.age || ''}</span>
-                </div>
-                `;
-            }).join('');
-
-            return `
-                <div class="history-session ${isExpanded ? 'expanded' : 'collapsed'}">
-                    <div class="history-session-header" data-action="toggle-session" style="cursor: pointer;">
-                        <div class="session-header-left">
-                            <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="6 9 12 15 18 9"></polyline>
-                            </svg>
-                            <span class="session-date">${session.sessionDate || session.sessionId}</span>
-                        </div>
-                        <span class="session-count">${withdrawals.length} withdrawn</span>
-                    </div>
-                    <div class="history-session-items">
-                        ${withdrawalItems}
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    return `
-        <div class="view dashboard-view">
-            <h2 class="section-title">Dashboard</h2>
-            
-            <div class="dashboard-content-wrapper">
-                <!-- Restored Stats Section -->
-                <div class="stats-section">
-                    <div class="stat-row">
-                        <span>All-Time Cleared</span>
-                        <strong>${alltimeCleared}</strong>
-                    </div>
-                    <div class="stat-row">
-                        <span>Last Run</span>
-                        <strong>${lastRun}</strong>
-                    </div>
-                    <div class="stat-row">
-                        <span>Last Cleared</span>
-                        <strong>${oldestCleared}</strong>
-                    </div>
-                    
-                    <!-- Capacity Health Bar -->
-                    <div class="health-section">
-                        <div class="health-label-row">
-                            <span>Pending Invitations</span>
-                            <span>${displayPending} / ${maxCapacity}</span>
-                        </div>
-                        <div class="health-bar-bg">
-                            <div class="health-bar-fill ${healthColor}" style="width: ${capacityPercent}%"></div>
-                        </div>
-                        <p class="health-text">${statusText}</p>
-                    </div>
-                </div>
-
-                <!-- Restored History Section -->
-                <h3 class="list-title" style="margin-top: 24px; margin-bottom: 12px;">Withdrawal History</h3>
-                <div class="people-list" style="overflow: visible;"> 
-                    <!-- Note: people-list class used for consistent styling, but content is custom -->
-                    ${historyListHTML}
-                </div>
-
-                <button data-action="go-home" class="secondary-btn" style="margin-top: 16px;">Back to Home</button>
-            </div>
-        </div>
-    `;
-}
-
-function getPlayerBarHTML(state) {
-    const isRunning = state?.isRunning || false;
-    const isPaused = state?.isPaused || false;
-    const subMode = state?.subMode || 'idle';
-    const progress = state?.status?.progress || 0;
-    const statusText = state?.status?.text || 'Ready';
-
-    // 1. Idle State
-    if (!isRunning) {
-        return `
-            <div class="player-info">
-                <span class="player-status">Ready to Clear</span>
-                <div class="player-subtext">Standing by</div>
-            </div>
-            <div class="player-controls">
-                <button class="control-btn" data-action="navigate-home" title="Home">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
-                </button>
-            </div>
-        `;
-    }
-
-    // 2. Running State
-    let icon = isPaused ?
-        '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>' :
-        '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>';
-
-    let action = isPaused ? 'resume' : 'pause'; // Logic for button click
-
-    // Status Display
-    let displayStatus = statusText;
-    if (subMode === 'scanning') displayStatus = `Scanning... ${Math.round(progress)}%`;
-    if (subMode === 'withdrawing') displayStatus = `Withdrawing... ${Math.round(progress)}%`;
-
-    return `
-        <div class="player-progress-container">
-            <div class="player-progress-bar" style="width: ${progress}%"></div>
-        </div>
-        <div class="player-info">
-            <span class="player-status">${displayStatus}</span>
-            <div class="player-subtext">
-                ${isPaused ? '<span style="color:var(--warning)">Paused</span>' : '<span style="color:var(--success)">Running</span>'}
-            </div>
-        </div>
-        <div class="player-controls">
-            ${subMode === 'withdrawing' ? `
-            <button class="control-btn" data-action="toggle-pause" title="${isPaused ? 'Resume' : 'Pause'}">
-                ${icon}
-            </button>
-            ` : ''}
-            <button class="control-btn primary" data-action="stop-operation" title="Stop">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
-            </button>
-        </div>
-    `;
-}
 function getHomeHTML(state) {
     const mode = state?.currentMode || 'count';
     const safeThreshold = state?.settings?.safeThreshold || localSettings.safeThreshold || 1;
     const safeUnit = state?.settings?.safeUnit || localSettings.safeUnit || 'month';
     const safeMode = state?.settings?.safeMode !== undefined ? state.settings.safeMode : (localSettings.safeMode !== false);
-    const alltimeCleared = localSettings.alltimeCleared || 0;
     const stats = state?.stats || {};
+    const alltimeCleared = stats.alltimeCleared || 0;
 
     const countActive = mode === 'count' ? 'active' : '';
     const ageActive = mode === 'age' ? 'active' : '';
@@ -686,18 +679,18 @@ function getHomeHTML(state) {
 
     return `
         <div class="view">
-            <div class="view-content-centered">
             <!-- Safe Mode Notice -->
             <div id="safe-badge" class="safe-notice" style="display: ${safeBadgeDisplay}">
                 Preserves connections sent within the last 
                 <a href="#" data-action="open-settings"><span id="safe-badge-text">${safeThreshold} ${safeUnit}${safeThreshold > 1 ? 's' : ''}</span></a>
             </div>
 
-            <!-- Mode Toggle -->
-            <div class="mode-toggle">
-                <button data-action="set-mode" data-mode="count" class="mode-btn ${countActive}">By Count</button>
-                <button data-action="set-mode" data-mode="age" class="mode-btn ${ageActive}">By Age</button>
-                <button data-action="set-mode" data-mode="message" class="mode-btn ${messageActive}">By Message</button>
+            <!-- Mode Toggle (Generic Slide Toggle) -->
+            <div class="slide-toggle slide-toggle--3 slide-toggle--mb" data-selected-index="${mode === 'count' ? 0 : mode === 'age' ? 1 : 2}">
+                <div class="slide-cursor"></div>
+                <button data-action="set-mode" data-mode="count" class="slide-btn ${countActive}">By Count</button>
+                <button data-action="set-mode" data-mode="age" class="slide-btn ${ageActive}">By Age</button>
+                <button data-action="set-mode" data-mode="message" class="slide-btn ${messageActive}">By Message</button>
             </div>
 
             <!-- By Count Input -->
@@ -747,7 +740,6 @@ function getHomeHTML(state) {
                 <div class="home-alltime">
                     <span id="home-alltime-count">${alltimeCleared}</span> connections cleared all-time
                 </div>
-            </div>
         </div>
     `;
 }
@@ -841,7 +833,7 @@ function getProgressHTML(state) {
     const peopleListHTML = foundPeople.length > 0 ? `
         <div id="people-list-container" class="people-list ${isWithdrawing ? 'visible' : 'hidden'}">
             <h4 class="list-title">Connections to Clear</h4>
-            <ul id="people-list-items" class="people-list-items">
+            <ul class="people-list-items">
                 ${foundPeople.map((person, idx) => {
         const isCleared = person.cleared || idx < currentIndex;
         const isActive = !isCleared && idx === currentIndex && isWithdrawing;
@@ -866,219 +858,46 @@ function getProgressHTML(state) {
             
             ${peopleListHTML}
             
-            ${peopleListHTML}
+            <!--Action Buttons-->
+                <div class="progress-actions" style="display: flex; gap: 8px; margin-top: 12px;">
+                    ${isWithdrawing ? `
+                    <button data-action="toggle-pause" class="secondary-btn" style="flex: 1;">
+                        <span class="btn-text">${isPaused ? 'Resume' : 'Pause'}</span>
+                    </button>
+                ` : ''}
+                    <button data-action="stop-operation" class="secondary-btn" style="flex: 1;">
+                        <span class="btn-text">Stop</span>
+                    </button>
+                </div>
         </div>
     `;
 }
 
-/* Old Sticky Actions removed */
 
-function getCompletedHTML(state) {
-    const processed = state?.stats?.processed || 0;
-    const pendingInvitations = state?.stats?.pendingInvitations || 0;
 
-    // Fallback if pendingInvitations is null/undefined (e.g. if script couldn't read it yet)
-    // If we just cleared 'processed', the live count properly *should* be the new count.
-    // However, if we haven't refreshed the page, 'pendingInvitations' might be the OLD count.
-    // For now, we trust the state, or subtract if needed. 
-    // User requested: "derived from linkedin's 'People (1,244)' item"
-    const currentConnections = pendingInvitations !== null ? pendingInvitations : '-';
 
-    const lastRunResult = state?.lastRunResult || {};
-    const stopType = lastRunResult.stopType || 'success';
-    const message = lastRunResult.message || '';
-
-    // Capacity Logic
-    const capacityLimit = 1250;
-    // Capacity Used = Current Connections
-    const capacityUsed = typeof currentConnections === 'number' ? currentConnections : 0;
-    const capacityLeft = Math.max(0, capacityLimit - capacityUsed);
-
-    // Percent for bar (inverted logic? No, percent of LIMIT used)
-    const capacityPercent = Math.min(100, Math.round((capacityUsed / capacityLimit) * 100));
-
-    // Health Color
-    let healthColor = 'green';
-    if (capacityPercent > 90) healthColor = 'red';
-    else if (capacityPercent > 75) healthColor = 'orange';
-
-    // Average Age Calculation
-    const foundPeople = state?.foundMatchingPeople || [];
-    const clearedPeople = state.sessionCleared || foundPeople.slice(0, processed);
-
-    let ageDisplay = "N/A";
-    if (clearedPeople.length > 0) {
-        const ages = clearedPeople.map(p => p.age || '').filter(a => a);
-        if (ages.length > 0) {
-            const first = ages[0];
-            const last = ages[ages.length - 1];
-            if (first === last) ageDisplay = first;
-            else ageDisplay = `${first} - ${last}`;
-        }
-    }
-
-    // Status Message
-    let statusIcon = '&#10003;';
-    let statusTitle = 'Session Complete';
-    let statusMsg = `Successfully cleared ${clearedPeople.length} connections.`;
-    let statusClass = 'success';
-
-    if (stopType === 'safety') {
-        statusTitle = 'Safety Stop';
-        statusIcon = '&#9888;';
-        statusMsg = message || `Safety stop triggered. ${clearedPeople.length} cleared.`;
-        statusClass = 'warning';
-    } else if (stopType === 'manual') {
-        statusTitle = 'Stopped';
-        statusIcon = '&#10006;';
-        statusMsg = `Stopped by user. Cleared ${clearedPeople.length}.`;
-        statusClass = 'error';
-    } else if (stopType === 'error') {
-        statusTitle = 'Error';
-        statusIcon = '&#9888;';
-        statusMsg = message;
-        statusClass = 'error';
-    }
-
-    // Cleared List
-    const clearedListItems = clearedPeople.map(person => `
-        <div class="history-entry">
-            <span class="history-link">${escapeHTML(person.name)}</span>
-            <span class="history-age">${person.age || '-'}</span>
-        </div>
-    `).join('') || '<div class="empty-history">No connections cleared.</div>';
-
-    return `
-        <div id="completed-view" class="view">
-            <div class="view-content-centered">
-            <!-- Summary Card -->
-            <div class="summary-card" style="background:var(--bg-card); border:1px solid var(--border-default); border-radius:12px; padding:20px; text-align:center; margin-bottom:20px; box-shadow:var(--shadow-sm);">
-                <div class="summary-icon ${statusClass}" style="width:48px; height:48px; border-radius:50%; background:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : 'danger'}-bg); color:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : 'danger'}); display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 12px auto;">
-                    ${statusIcon}
-                </div>
-                <h2 style="margin:0 0 8px 0; font-size:18px; color:var(--text-primary);">${statusTitle}</h2>
-                <p style="margin:0; color:var(--text-secondary); font-size:14px;">${statusMsg}</p>
-                
-                <div class="summary-stats-grid" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-top:20px; padding-top:20px; border-top:1px solid var(--border-default);">
-                    <div class="stat-item">
-                        <span style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Cleared</span>
-                        <strong style="font-size:16px; color:var(--text-primary);">${clearedPeople.length}</strong>
-                    </div>
-                     <div class="stat-item">
-                        <span style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Est. Left</span>
-                        <strong style="font-size:16px; color:var(--text-primary);">${capacityLeft}</strong>
-                    </div>
-                    <div class="stat-item">
-                        <span style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Avg Age</span>
-                        <strong style="font-size:14px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${ageDisplay}</strong>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Capacity Section -->
-            <div class="stats-section">
-                <!-- Capacity Bar -->
-                <div class="health-section">
-                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-                        <label>Connection Capacity</label>
-                        <span style="font-size:12px; color:var(--text-secondary);">${capacityUsed} / ~${capacityLimit} used</span>
-                    </div>
-                    <div class="health-bar-bg">
-                        <div id="health-fill" class="health-bar-fill ${healthColor}" style="width: ${capacityPercent}%"></div>
-                    </div>
-                    <p style="margin-top:6px; font-size:12px; color:var(--text-secondary);">You have approx. <strong>${capacityLeft}</strong> slots remaining.</p>
-                </div>
-            </div>
-
-            <!-- Continue Clearing -->
-            ${state?.currentMode === 'message' ? `
-                <div style="margin-top:16px; padding:12px; background:var(--bg-surface); border:1px solid var(--border-default); border-radius:var(--radius-md);">
-                    <h4 style="margin:0 0 8px; font-size:13px; color:var(--text-primary);">Continue Clearing</h4>
-                    <p style="margin:0 0 10px; font-size:12px; color:var(--text-secondary);">Return home to select more message groups to clear.</p>
-                    <button data-action="go-home" class="secondary-btn" style="width:100%;">
-                        <span class="btn-text">Back to Message Selection</span>
-                    </button>
-                </div>
-            ` : `
-                <div style="margin-top:16px; padding:12px; background:var(--bg-surface); border:1px solid var(--border-default); border-radius:var(--radius-md);">
-                    <h4 style="margin:0 0 8px; font-size:13px; color:var(--text-primary);">Continue Clearing</h4>
-                    ${stopType === 'safety' ? `
-                    <div style="margin-bottom:10px; padding:8px; background:var(--warning-bg); border:1px solid var(--warning); border-radius:6px;">
-                        <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-primary); cursor:pointer;">
-                            <span>Adjust safety threshold:</span>
-                            <input type="number" id="continue-safe-threshold" value="${state?.settings?.safeThreshold || localSettings.safeThreshold || 1}" min="1" max="24" class="inline-input" style="width:40px;">
-                            <select id="continue-safe-unit" class="inline-select">
-                                <option value="day" ${(state?.settings?.safeUnit || localSettings.safeUnit) === 'day' ? 'selected' : ''}>days</option>
-                                <option value="week" ${(state?.settings?.safeUnit || localSettings.safeUnit) === 'week' ? 'selected' : ''}>weeks</option>
-                                <option value="month" ${(state?.settings?.safeUnit || localSettings.safeUnit) === 'month' ? 'selected' : ''}>months</option>
-                                <option value="year" ${(state?.settings?.safeUnit || localSettings.safeUnit) === 'year' ? 'selected' : ''}>years</option>
-                            </select>
-                        </label>
-                    </div>
-                    ` : ''}
-                    <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;">
-                        <label class="continue-option">
-                            <input type="radio" name="continue-mode" value="count" checked>
-                            <span>Clear next</span>
-                            <input type="number" id="continue-count" value="${localSettings.withdrawCount || 10}" min="1" max="5000" class="inline-input">
-                            <span>connections</span>
-                        </label>
-                        <label class="continue-option">
-                            <input type="radio" name="continue-mode" value="age">
-                            <span>Clear older than</span>
-                            <input type="number" id="continue-age" value="${localSettings.ageValue || 3}" min="1" max="365" class="inline-input">
-                            <select id="continue-age-unit" class="inline-select">
-                                <option value="day" ${localSettings.ageUnit === 'day' ? 'selected' : ''}>days</option>
-                                <option value="week" ${localSettings.ageUnit === 'week' ? 'selected' : ''}>weeks</option>
-                                <option value="month" ${localSettings.ageUnit === 'month' ? 'selected' : ''}>months</option>
-                                <option value="year" ${localSettings.ageUnit === 'year' ? 'selected' : ''}>years</option>
-                            </select>
-                        </label>
-                    </div>
-                    <button data-action="continue-clearing" class="primary-btn" style="width:100%;">
-                        <span class="btn-text">Continue Clearing</span>
-                    </button>
-                </div>
-            `}
-
-            <!-- Just Cleared (Collapsible) -->
-            <div class="history-session collapsed">
-                <div class="history-session-header" data-action="toggle-session">
-                    <div class="session-header-left">
-                        <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="6 9 12 15 18 9"></polyline>
-                        </svg>
-                        <span class="session-date">Just Cleared</span>
-                    </div>
-                    <span class="session-count">${processed}</span>
-                </div>
-                <div class="history-session-items">
-                    ${clearedListItems}
-                </div>
-            </div>
-
-            <button data-action="go-home" class="secondary-btn" style="margin-top:12px; width:100%;">Back to Home</button>
-            </div>
-        </div>
-    `;
-}
-
+// HTML Generator: Settings View
 function getSettingsHTML(state) {
-    const safeMode = localSettings.safeMode !== false;
-    const safeThreshold = localSettings.safeThreshold || 1;
-    const safeUnit = localSettings.safeUnit || 'month';
-    const debugMode = localSettings.debugMode === true;
-    const theme = localSettings.theme || 'light';
+    // PREFER the passed state.settings over localSettings to ensure we render what was just loaded/saved
+    const settings = state?.settings || localSettings;
+
+    // Fallback to defaults
+    const safeMode = settings.safeMode !== false;
+    const safeThreshold = settings.safeThreshold || 6;
+    const safeUnit = settings.safeUnit || 'month';
+    const debugMode = settings.debugMode || false;
+    const theme = settings.theme || 'light';
 
     return `
         <div class="view">
-            <h3>Settings</h3>
-
-            <!-- Theme Toggle -->
+            <div class="section-title">Settings</div>
+            
             <div class="setting-group">
-                <label>Appearance</label>
-                <div class="theme-toggle">
-                    <button data-action="set-theme" data-theme="light" class="theme-btn ${theme === 'light' ? 'active' : ''}" title="Light">
+                <!-- Appearance (No Label, just toggle) -->
+                <div class="slide-toggle slide-toggle--2" data-selected-index="${theme === 'light' ? 0 : 1}">
+                    <div class="slide-cursor"></div>
+                    <button data-action="set-theme" data-theme="light" class="slide-btn ${theme === 'light' ? 'active' : ''}" title="Light">
+                        <!-- Sun Icon -->
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="5"/>
                             <line x1="12" y1="1" x2="12" y2="3"/>
@@ -1091,7 +910,8 @@ function getSettingsHTML(state) {
                             <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
                         </svg>
                     </button>
-                    <button data-action="set-theme" data-theme="dark" class="theme-btn ${theme === 'dark' ? 'active' : ''}" title="Dark">
+                    <button data-action="set-theme" data-theme="dark" class="slide-btn ${theme === 'dark' ? 'active' : ''}" title="Dark">
+                        <!-- Moon Icon -->
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
                         </svg>
@@ -1099,77 +919,307 @@ function getSettingsHTML(state) {
                 </div>
             </div>
 
-            <!-- Safe Mode -->
-            <div class="setting-option" id="safe-mode-option">
-                <label>
-                    <input type="checkbox" id="safe-mode-toggle" ${safeMode ? 'checked' : ''}>
-                    <span class="option-text">
-                        <strong>Safe Mode</strong>
-                        <small>Preserves connections sent within the last:</small>
-                    </span>
-                </label>
-                <div id="safe-threshold-group" class="inline-threshold">
-                    <input type="number" id="safe-threshold" value="${safeThreshold}" min="1" max="12" class="inline-input">
-                    <select id="safe-unit" class="inline-select">
-                        <option value="month" ${safeUnit === 'month' ? 'selected' : ''}>months</option>
-                        <option value="week" ${safeUnit === 'week' ? 'selected' : ''}>weeks</option>
-                    </select>
+            <div class="setting-group">
+                <div class="setting-option">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="safe-mode-toggle" ${safeMode ? 'checked' : ''}>
+                        <span class="option-text">
+                            <strong>Enable Safe Mode</strong>
+                            <small>Prevent withdrawing invitations sent recently.</small>
+                        </span>
+                    </label>
+                    
+                    <div id="safe-threshold-group" class="inline-threshold" style="display: ${safeMode ? 'flex' : 'none'}">
+                        <input type="number" id="safe-threshold" value="${safeThreshold}" min="1" max="60" class="input-sm">
+                        <select id="safe-unit" class="select-sm">
+                            <option value="day" ${safeUnit === 'day' ? 'selected' : ''}>Days</option>
+                            <option value="week" ${safeUnit === 'week' ? 'selected' : ''}>Weeks</option>
+                            <option value="month" ${safeUnit === 'month' ? 'selected' : ''}>Months</option>
+                        </select>
+                    </div>
                 </div>
             </div>
 
-            <!-- Debug Mode -->
-            <div class="setting-option">
-                <label>
-                    <input type="checkbox" id="debug-mode-toggle" ${debugMode ? 'checked' : ''}>
-                    <span class="option-text">
-                        <strong>Debug Mode</strong>
-                        <small>Simulates withdrawals without actually removing connections</small>
-                    </span>
-                </label>
+            <div class="setting-group">
+                <div class="setting-option">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="debug-mode-toggle" ${debugMode ? 'checked' : ''}>
+                        <span class="option-text">
+                            <strong>Enable Debug Mode</strong>
+                            <small>Show detailed logs and keep window open.</small>
+                        </span>
+                    </label>
+                </div>
             </div>
 
-
-
             <div class="btn-row">
-                <button data-action="save-settings" class="primary-btn">Save</button>
-                <button data-action="go-home" class="secondary-btn">Back</button>
+                <button data-action="go-home" class="primary-btn">Done</button>
             </div>
         </div>
     `;
 }
 
-/* Old Stats/History functions removed - merged into getDashboardHTML */
+// Auto-Save Helper
+const isAutoSaving = { current: false };
 
-function getScanResultsHTML(state) {
+async function autoSaveSettings() {
+    isAutoSaving.current = true;
+    console.log('Auto-saving settings...');
+
+    const safeModeEl = document.getElementById('safe-mode-toggle');
+    const safeThresholdEl = document.getElementById('safe-threshold');
+    const safeUnitEl = document.getElementById('safe-unit');
+    const debugModeEl = document.getElementById('debug-mode-toggle');
+
+    // Guard: Ensure elements exist before reading
+    if (!safeModeEl || !safeThresholdEl || !safeUnitEl || !debugModeEl) {
+        isAutoSaving.current = false;
+        return;
+    }
+
+    const safeMode = safeModeEl.checked;
+    const safeThreshold = parseInt(safeThresholdEl.value, 10);
+    const safeUnit = safeUnitEl.value;
+    const debugMode = debugModeEl.checked;
+
+    // Toggle visibility of threshold group immediately
+    const thresholdGroup = document.getElementById('safe-threshold-group');
+    if (thresholdGroup) {
+        thresholdGroup.style.display = safeMode ? 'flex' : 'none';
+    }
+
+    // Update runtime localSettings
+    localSettings.safeMode = safeMode;
+    localSettings.safeThreshold = safeThreshold;
+    localSettings.safeUnit = safeUnit;
+    localSettings.debugMode = debugMode;
+
+    // Save flat keys to storage to notify Side Panel listeners immediately
+    await chrome.storage.local.set({
+        safeMode,
+        safeThreshold,
+        safeUnit,
+        debugMode
+    });
+
+    // Persist to storage (extension_state)
+    const { extension_state } = await chrome.storage.local.get('extension_state');
+    const newState = extension_state || { ...DEFAULT_STATE };
+
+    // Ensure nested object exists
+    newState.settings = newState.settings || { ...DEFAULTS };
+
+    // Update settings in state
+    newState.settings.safeMode = safeMode;
+    newState.settings.safeThreshold = safeThreshold;
+    newState.settings.safeUnit = safeUnit;
+    newState.settings.debugMode = debugMode;
+    newState.settings.withdrawCount = parseInt(document.getElementById('withdraw-count')?.value, 10) || DEFAULTS.withdrawCount;
+    newState.settings.ageValue = parseInt(document.getElementById('age-value')?.value, 10) || DEFAULTS.ageValue;
+    newState.settings.ageUnit = document.getElementById('age-unit')?.value || DEFAULTS.ageUnit;
+
+    if (localSettings.theme) {
+        newState.settings.theme = localSettings.theme;
+    }
+
+    await chrome.storage.local.set({ extension_state: newState });
+    console.log('Settings saved:', newState.settings);
+
+    // Reset flag after a short delay to allow storage event to fire and be ignored
+    setTimeout(() => { isAutoSaving.current = false; }, 100);
+}
+
+function getStatsHTML(state, livePendingCount = null) {
+    const stats = state?.stats || {};
+    const lastRunResult = state?.lastRunResult || null;
+
+    // Per spec: ~1,250 capacity limit
+    const maxCapacity = 1250;
+
+    // All-Time cumulative total
+    const alltimeCleared = stats.alltimeCleared || 0;
+
+    // Current Connections: live page query > stored value
+    let currentConnections = livePendingCount;
+    let dataSource = 'Live';
+
+    if (currentConnections === null && stats.pendingInvitations != null) {
+        currentConnections = stats.pendingInvitations;
+        dataSource = 'Stored';
+    }
+
+    const hasData = currentConnections !== null;
+    const displayCurrent = hasData ? currentConnections : '---';
+    const availableCapacity = hasData ? Math.max(0, maxCapacity - currentConnections) : '---';
+    const capacityPercent = hasData ? Math.min(100, Math.round((currentConnections / maxCapacity) * 100)) : 0;
+
+    // Health bar color per spec: green <25%, yellow 25-50%, orange 50-75%, red >75%
+    let healthColor = 'green';
+    if (capacityPercent > 75) healthColor = 'red';
+    else if (capacityPercent > 50) healthColor = 'orange';
+    else if (capacityPercent > 25) healthColor = 'yellow';
+
+    // Last Run: elapsed time since last operation
+    let lastRunText = 'Never';
+    if (lastRunResult?.timestamp) {
+        const elapsed = Date.now() - lastRunResult.timestamp;
+        const mins = Math.floor(elapsed / 60000);
+        const hours = Math.floor(mins / 60);
+        const days = Math.floor(hours / 24);
+        if (days > 0) lastRunText = `${days} day${days > 1 ? 's' : ''} ago`;
+        else if (hours > 0) lastRunText = `${hours} hour${hours > 1 ? 's' : ''} ago`;
+        else if (mins > 1) lastRunText = `${mins} minutes ago`;
+        else lastRunText = 'Just now';
+    }
+
+    // Last Cleared: number removed in last session
+    const lastCleared = lastRunResult?.processed || 0;
+
+    // Source status text
+    let statusText = 'Open LinkedIn Sent Invitations to see live count';
+    if (hasData) {
+        if (dataSource === 'Live') {
+            statusText = 'Live count from LinkedIn page';
+        } else if (stats.pendingUpdatedAt) {
+            const ago = Math.round((Date.now() - stats.pendingUpdatedAt) / 60000);
+            statusText = ago < 1 ? 'Updated just now' : `Updated ${ago}m ago`;
+        } else {
+            statusText = 'Last known count';
+        }
+    }
+
     return `
         <div class="view">
-            <div class="view-content-centered">
-            <h2 class="section-title">Scan Results</h2>
-            <p class="scan-desc">Select message groups to withdraw.</p>
-            <div id="scan-results-list" class="scan-results-list"></div>
-            <div class="scan-actions">
-                <button data-action="withdraw-selected" class="primary-btn" disabled>Withdraw Selected (<span id="selected-count">0</span>)</button>
-                <button data-action="go-home" class="secondary-btn">Cancel</button>
+            <h3>Statistics</h3>
+            
+            <div class="stats-section">
+                <div class="stat-row">
+                    <span>Current Connections</span>
+                    <strong>${displayCurrent}</strong>
+                </div>
+                <div class="stat-row">
+                    <span>Available Capacity</span>
+                    <strong>${availableCapacity}</strong>
+                </div>
+                <div class="stat-row">
+                    <span>Last Run</span>
+                    <strong>${lastRunText}</strong>
+                </div>
+                <div class="stat-row">
+                    <span>Last Cleared</span>
+                    <strong>${lastCleared}</strong>
+                </div>
+                <div class="stat-row">
+                    <span>All-Time Cleared</span>
+                    <strong>${alltimeCleared}</strong>
+                </div>
+                
+                <!-- Capacity Health Bar -->
+                <div class="health-section">
+                    <div class="health-label-row">
+                        <span>Capacity Health</span>
+                        <span>${displayCurrent} / ~${maxCapacity}</span>
+                    </div>
+                    <div class="health-bar-bg">
+                        <div class="health-bar-fill ${healthColor}" style="width: ${capacityPercent}%"></div>
+                    </div>
+                    <p class="health-text">${statusText}</p>
+                </div>
             </div>
-            </div>
+
+            <button data-action="go-home" class="secondary-btn" style="margin-top: 12px;">Back</button>
         </div>
     `;
+}
+
+function getHistoryHTML(state, withdrawalHistory = []) {
+    let historyContent = '';
+
+    if (withdrawalHistory.length === 0) {
+        historyContent = '<p class="empty-history">No withdrawals recorded yet.</p>';
+    } else {
+        // Render sessions in reverse chronological order
+        const sessions = [...withdrawalHistory].reverse();
+        historyContent = sessions.map((session, index) => {
+            const withdrawals = session.withdrawals || [];
+            const isExpanded = index === 0; // First session expanded by default
+            const withdrawalItems = [...withdrawals].reverse().map(w => {
+                const profileLink = w.profileUrl
+                    ? `<a href="${w.profileUrl}" target="_blank" class="history-link">${w.name || 'Unknown'}</a>`
+                    : `<span>${w.name || 'Unknown'}</span>`;
+                return `
+        <div class="history-entry">
+            ${profileLink}
+            <span class="history-age">${w.age || ''}</span>
+        </div>
+        `;
+            }).join('');
+
+            return `
+                <div class="history-session ${isExpanded ? 'expanded' : 'collapsed'}">
+                    <div class="history-session-header" data-action="toggle-session">
+                        <div class="session-header-left">
+                            <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                            <span class="session-date">${session.sessionDate || session.sessionId}</span>
+                        </div>
+                        <span class="session-count">${withdrawals.length} withdrawn</span>
+                    </div>
+                    <div class="history-session-items">
+                        ${withdrawalItems}
+                    </div>
+                </div>
+        `;
+        }).join('');
+    }
+
+    return `
+        <div class="view">
+            <h2 class="section-title">Withdrawal History</h2>
+            <div id="history-content" class="history-content">
+                ${historyContent}
+            </div>
+            <button data-action="go-home" class="secondary-btn">Back</button>
+        </div>
+    `;
+}
+
+function extractTopicFromMessage(msg) {
+    if (!msg) return null;
+    const patterns = [
+        /(?:interested in|about|regarding|re:|for)\s+["']?([A-Z][^.!?"'\n]{5,60})/i,
+        /(?:position|role|opportunity|project|job)\s*(?:at|for|with)?\s+["']?([A-Z][^.!?"'\n]{3,40})/i,
+        /(?:reaching out|connect).*?(?:about|regarding)\s+([A-Z][^.!?"'\n]{5,50})/i,
+    ];
+    for (const pat of patterns) {
+        const m = msg.match(pat);
+        if (m) return m[1].trim();
+    }
+    return null;
+}
+
+
+
+function updateWithdrawButton() {
+    const btn = document.getElementById('withdraw-selected-btn');
+    const countSpan = document.getElementById('selected-count');
+    if (btn) btn.disabled = selectedScanHashes.size === 0;
+    if (countSpan) countSpan.textContent = selectedScanHashes.size;
 }
 
 function getWrongPageHTML(state) {
     return `
         <div class="view">
-            <div class="view-content-centered">
-                <div class="message-box">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ff9800" stroke-width="2">
-                        <circle cx="12" cy="12" r="10" />
-                        <line x1="12" y1="8" x2="12" y2="12" />
-                        <line x1="12" y1="16" x2="12.01" y2="16" />
-                    </svg>
-                    <h2 id="wrong-page-title">Wrong Page</h2>
-                    <p id="wrong-page-msg">Please navigate to the Sent Invitations page.</p>
-                    <button data-action="open-sent-page" class="primary-btn">Open Sent Invitations</button>
-                </div>
+            <div class="message-box">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ff9800" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <h2 id="wrong-page-title">Wrong Page</h2>
+                <p id="wrong-page-msg">Please navigate to the Sent Invitations page.</p>
+                <button data-action="open-sent-page" class="primary-btn">Open Sent Invitations</button>
             </div>
         </div>
     `;
@@ -1178,17 +1228,15 @@ function getWrongPageHTML(state) {
 function getOffPlatformHTML(state) {
     return `
         <div class="view">
-            <div class="view-content-centered">
-                <div class="message-box">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#2196f3" stroke-width="2">
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                        <polyline points="15 3 21 3 21 9" />
-                        <line x1="10" y1="14" x2="21" y2="3" />
-                    </svg>
-                    <h2>Off Platform</h2>
-                    <p>ClearConnect works on LinkedIn. Open the Sent Invitations page to get started.</p>
-                    <button data-action="open-sent-page" class="primary-btn">Open LinkedIn</button>
-                </div>
+            <div class="message-box">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#2196f3" stroke-width="2">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                    <polyline points="15 3 21 3 21 9" />
+                    <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+                <h2>Off Platform</h2>
+                <p>ClearConnect works on LinkedIn. Open the Sent Invitations page to get started.</p>
+                <button data-action="open-sent-page" class="primary-btn">Open LinkedIn</button>
             </div>
         </div>
     `;
@@ -1197,17 +1245,15 @@ function getOffPlatformHTML(state) {
 function getConnectionErrorHTML(state) {
     return `
         <div class="view">
-            <div class="view-content-centered">
-                <div class="message-box">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#f44336" stroke-width="2">
-                        <circle cx="12" cy="12" r="10" />
-                        <line x1="15" y1="9" x2="9" y2="15" />
-                        <line x1="9" y1="9" x2="15" y2="15" />
-                    </svg>
-                    <h2>Connection Lost</h2>
-                    <p>The connection to the page was interrupted. Please refresh to restore functionality.</p>
-                    <button data-action="refresh-connection" class="primary-btn">Refresh Page</button>
-                </div>
+            <div class="message-box">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#f44336" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="15" y1="9" x2="9" y2="15" />
+                    <line x1="9" y1="9" x2="15" y2="15" />
+                </svg>
+                <h2>Connection Error</h2>
+                <p>Could not verify page status. Please refresh LinkedIn.</p>
+                <button data-action="open-sent-page" class="secondary-btn">Reload Extension</button>
             </div>
         </div>
     `;
@@ -1235,22 +1281,21 @@ function getModeDescription(mode, settings) {
 // ============ EVENT DELEGATION ============
 
 function setupEventDelegation() {
-    // Header buttons (outside app-root)
-    document.addEventListener('click', async (e) => {
-        const target = e.target.closest('[data-action]') || e.target.closest('#settings-btn, #dashboard-btn, #logo-btn');
+    const appRoot = document.getElementById('app-root');
+    if (!appRoot) {
+        console.error('CRITICAL: app-root not found in DOM');
+        return;
+    }
+
+    // Global Event Delegation
+    appRoot.addEventListener('click', async (e) => {
+        const target = e.target.closest('[data-action]') || e.target.closest('#settings-btn, #stats-btn, #history-btn, #logo-btn');
         if (!target) return;
 
-        // Header nav buttons (by ID)
-        if (target.id === 'settings-btn') {
-            e.preventDefault();
-            navigateTo('settings');
-            return;
-        }
-        if (target.id === 'dashboard-btn') {
-            e.preventDefault();
-            navigateTo('dashboard');
-            return;
-        }
+        // Header Navigation
+        if (target.id === 'settings-btn') { navigateTo('settings'); return; }
+        if (target.id === 'stats-btn') { navigateTo('stats'); return; }
+        if (target.id === 'history-btn') { navigateTo('history'); return; }
         if (target.id === 'logo-btn') {
             e.preventDefault();
             navigateTo('home');
@@ -1268,6 +1313,13 @@ function setupEventDelegation() {
             state.uiNavigation.currentTab = 'completed';
 
             await chrome.storage.local.set({ extension_state: state });
+            // Force Popup to always start on Home
+            if (state.uiNavigation.currentTab !== 'home') {
+                state.uiNavigation.currentTab = 'home';
+                // We don't necessarily need to save this back to storage immediately unless we want to persist the reset,
+                // but for display purposes we just mutate the local state object before rendering.
+            }
+
             renderUI(state);
             return;
         }
@@ -1281,6 +1333,14 @@ function setupEventDelegation() {
         }
 
         handleAction(action, target);
+    });
+
+    // Settings Auto-Save Delegation
+    appRoot.addEventListener('change', (e) => {
+        if (e.target.matches('#safe-mode-toggle, #safe-threshold, #safe-unit, #debug-mode-toggle')) {
+            console.log('Setting changed:', e.target.id);
+            autoSaveSettings();
+        }
     });
 }
 
@@ -1296,6 +1356,9 @@ async function handleAction(action, target) {
         case 'open-stats':
             navigateTo('stats');
             break;
+        case 'resume-scan-results':
+            navigateTo('scanResults');
+            break;
 
         // Mode switching
         case 'set-mode':
@@ -1303,11 +1366,49 @@ async function handleAction(action, target) {
             if (mode) setMode(mode);
             break;
 
-        // Theme
-        case 'set-theme':
-            const theme = target.dataset.theme;
-            if (theme) setTheme(theme);
+        // Theme Toggle
+        case 'set-theme': {
+            const themeBtn = target.closest('[data-theme]');
+            if (!themeBtn) return;
+            const theme = themeBtn.dataset.theme;
+
+            // 1. Suppress global re-render to preserve animation
+            if (typeof isAutoSaving !== 'undefined') {
+                isAutoSaving.current = true;
+            }
+
+            // 2. Immediate visual update (Animation)
+            const wrapper = themeBtn.closest('.slide-toggle');
+            if (wrapper) {
+                // Update index for slide effect
+                wrapper.dataset.selectedIndex = theme === 'light' ? 0 : 1;
+                // Update active buttons
+                wrapper.querySelectorAll('.slide-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn === themeBtn);
+                });
+            }
+
+            // 3. Apply theme to document (Instant)
+            document.documentElement.setAttribute('data-theme', theme);
+            localSettings.theme = theme;
+
+            // 4. Persist
+            const { extension_state } = await chrome.storage.local.get('extension_state');
+            const newState = extension_state || DEFAULT_STATE;
+            newState.settings = newState.settings || {};
+            newState.settings.theme = theme;
+
+            await chrome.storage.local.set({
+                extension_state: newState,
+                theme: theme
+            });
+
+            // 5. Release lock after animation finishes + storage event fires
+            setTimeout(() => {
+                if (typeof isAutoSaving !== 'undefined') isAutoSaving.current = false;
+            }, 300); // 300ms matches CSS transition
             break;
+        }
 
         // Operations
         case 'start-clearing':
@@ -1335,8 +1436,73 @@ async function handleAction(action, target) {
         case 'open-sent-page':
             openSentPage();
             break;
+
+        case 'close-footer': {
+            // 1. Suppress global re-render
+            if (typeof isAutoSaving !== 'undefined') {
+                isAutoSaving.current = true;
+            }
+
+            // 2. Immediate visual update (Manual DOM)
+            const footer = document.querySelector('.footer');
+            if (footer) {
+                footer.style.display = 'none';
+                // Also hide specific children if needed, but hiding container is usually enough
+                const footerContent = document.getElementById('footer-content');
+                if (footerContent) footerContent.innerHTML = '';
+            }
+
+            // 3. Update State & Persist
+            const { extension_state } = await chrome.storage.local.get('extension_state');
+
+            if (extension_state?.lastRunResult) {
+                extension_state.lastRunResult = null;
+                await chrome.storage.local.set({ extension_state });
+            } else {
+                // Otherwise it's the idle "Ready" message - hide for this session
+                localSettings.hideReadyStatus = true;
+                // We don't save localSettings.hideReadyStatus to storage usually, 
+                // but if we did, we'd do it here. 
+                // For now, just suppressing the re-render is enough if it WAS triggering one.
+                // If it wasn't triggering one, we wouldn't see a flicker. 
+                // The flickering implies storage WAS changing.
+            }
+
+            // 4. Release lock
+            setTimeout(() => {
+                if (typeof isAutoSaving !== 'undefined') isAutoSaving.current = false;
+            }, 300);
+            break;
+        }
+
         case 'withdraw-selected':
-            // TODO: implement
+            if (!activeTabId || selectedScanHashes.size === 0) break;
+            try {
+                await chrome.tabs.sendMessage(activeTabId, {
+                    action: 'WITHDRAW_SELECTED',
+                    selectedHashes: Array.from(selectedScanHashes),
+                    debugMode: localSettings.debugMode === true,
+                    safeMode: localSettings.safeMode !== false,
+                    safeThreshold: localSettings.safeThreshold || 1,
+                    safeUnit: localSettings.safeUnit || 'month'
+                });
+
+                // FILTER & SAVE REMAINING RESULTS for "Clear More" workflow
+                // We keep the groups that were NOT selected
+                const remainingResults = foundScanResults.filter(item => !selectedScanHashes.has(item.id));
+                chrome.storage.local.set({ savedScanResults: remainingResults });
+
+                // Clear local selection state
+                selectedScanHashes.clear();
+
+                // Open side panel and close popup
+
+                // Open side panel and close popup
+                chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
+                window.close();
+            } catch (e) {
+                console.log('Content script not ready:', e);
+            }
             break;
 
         // History session toggle
@@ -1356,7 +1522,7 @@ async function handleAction(action, target) {
         // Select Continue Mode
         case 'select-continue-mode':
             const modeVal = target.dataset.value;
-            const radio = document.querySelector(`input[name='continue-mode'][value='${modeVal}']`);
+            const radio = document.querySelector(`input[name = 'continue-mode'][value = '${modeVal}']`);
             if (radio) radio.checked = true;
             break;
 
@@ -1366,34 +1532,6 @@ async function handleAction(action, target) {
                 chrome.tabs.reload(activeTabId);
             }
             window.close();
-        // Refresh connection (stale popup/content script)
-        case 'refresh-connection':
-            if (activeTabId) {
-                chrome.tabs.reload(activeTabId);
-            }
-            window.close();
-            break;
-
-        // Toggle History Session (Accordion)
-        case 'toggle-session':
-            const sessionEl = target.closest('.history-session');
-            if (sessionEl) {
-                const wasExpanded = sessionEl.classList.contains('expanded');
-                // Close all others (optional - mimics accordion)
-                // document.querySelectorAll('.history-session').forEach(el => {
-                //    el.classList.remove('expanded');
-                //    el.classList.add('collapsed');
-                // });
-
-                // Toggle current
-                if (wasExpanded) {
-                    sessionEl.classList.remove('expanded');
-                    sessionEl.classList.add('collapsed');
-                } else {
-                    sessionEl.classList.remove('collapsed');
-                    sessionEl.classList.add('expanded');
-                }
-            }
             break;
     }
 }
@@ -1449,7 +1587,10 @@ async function saveSettings() {
 }
 
 async function startOperation(options = {}) {
-    if (!activeTabId) return;
+    if (!activeTabId) {
+        showFooterError('No active tab found. Open LinkedIn Sent Invitations first.');
+        return;
+    }
 
     const { extension_state } = await chrome.storage.local.get('extension_state');
     const mode = extension_state?.currentMode || 'count';
@@ -1475,19 +1616,46 @@ async function startOperation(options = {}) {
             safeThreshold: localSettings.safeThreshold,
             safeUnit: localSettings.safeUnit || 'month',
             debugMode: localSettings.debugMode,
-            immediate: options.immediate === true // Pass immediate flag
+            immediate: options.immediate === true
         });
+
+        // Reset viewOnly flag on new run
+        const { extension_state } = await chrome.storage.local.get('extension_state');
+        if (extension_state) {
+            extension_state.viewOnly = false;
+            await chrome.storage.local.set({ extension_state });
+        }
+
+        // Open side panel and close popup
+        chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
+        window.close();
     } catch (e) {
         console.log('Content script not ready:', e);
+        showFooterError('Page not ready. Please refresh the LinkedIn page and try again.');
     }
 }
 
 async function startScan() {
-    if (!activeTabId) return;
+    if (!activeTabId) {
+        showFooterError('No active tab found. Open LinkedIn Sent Invitations first.');
+        return;
+    }
     try {
         await chrome.tabs.sendMessage(activeTabId, { action: 'SCAN_CONNECTIONS' });
+
+        // Reset viewOnly flag on new scan
+        const { extension_state } = await chrome.storage.local.get('extension_state');
+        if (extension_state) {
+            extension_state.viewOnly = false;
+            await chrome.storage.local.set({ extension_state });
+        }
+
+        // Open side panel and close popup
+        chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
+        window.close();
     } catch (e) {
         console.log('Content script not ready:', e);
+        showFooterError('Page not ready. Please refresh the LinkedIn page and try again.');
     }
 }
 
@@ -1573,30 +1741,19 @@ function openSentPage() {
 // ============ INITIALIZATION ============
 
 // Check page and set transient pageStatus variable (NEVER persists to storage)
-// Check page and set transient pageStatus variable (NEVER persists to storage)
 async function checkPage() {
     try {
-        // In Side Panel, 'currentWindow: true' refers to the side panel itself (which has no tabs).
-        // We need to query for the active tab in the *last focused* window.
-        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-
-        // Robust check for undefined tab
-        if (!tab || !tab.id) {
-            console.log('ClearConnect: No active tab found');
-            pageStatus = 'connectionError';
-            return;
-        }
-
-        activeTabId = tab.id;
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        activeTabId = tab?.id;
 
         // Not on LinkedIn at all
-        if (!tab.url || !tab.url.includes('linkedin.com')) {
+        if (!tab?.url?.includes('linkedin.com')) {
             pageStatus = 'offPlatform';
             return;
         }
 
         // On LinkedIn but wrong page
-        if (!tab.url.includes('mynetwork/invitation-manager/sent')) {
+        if (!tab?.url?.includes('mynetwork/invitation-manager/sent')) {
             pageStatus = 'wrongPage';
             return;
         }
@@ -1616,31 +1773,63 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Setup event delegation first
     setupEventDelegation();
 
-    // DEBUG: Log all storage to find where history is hiding
-    chrome.storage.local.get(null, (items) => {
-        console.log('🔴 FULL STORAGE DUMP:', items);
-        if (items.history) console.log('🔴 History Object:', items.history);
-        if (items.stats) console.log('🔴 Stats Object:', items.stats);
-    });
+    // Load local settings - STRICTLY from extension_state
+    // We removed the legacy chrome.storage.local.get(DEFAULTS) call here to prevent conflicts.
 
-    // Load saved settings
-    const settings = await getSettings();
-
-    // Load local settings
-    const saved = await chrome.storage.local.get(DEFAULTS);
-    localSettings = { ...DEFAULTS, ...saved };
-
-    // Check page status (sets transient pageStatus variable)
+    // 1. Check page status (sets transient pageStatus variable)
     await checkPage();
 
-    // ALWAYS render - pageStatus check    // 4. Initial Render
+    // 2. Restore State & Settings
     try {
-        const { extension_state } = await chrome.storage.local.get('extension_state');
-        // Ensure we always render even if state is null
-        renderUI(extension_state || { ...DEFAULT_STATE });
+        const { extension_state, alltimeCleared: legacyAlltime, theme: savedTheme } = await chrome.storage.local.get(['extension_state', 'alltimeCleared', 'theme']);
+        const state = extension_state || { ...DEFAULT_STATE };
+
+        // Legacy Migration for alltimeCleared
+        if (legacyAlltime !== undefined && state.stats && state.stats.alltimeCleared === 0) {
+            state.stats.alltimeCleared = legacyAlltime;
+        }
+
+        // HYDRATE localSettings from persisted state
+        // This is the CRITICAL fix: Ensure localSettings mirrors the loaded state.settings
+        if (state.settings) {
+            localSettings = { ...DEFAULTS, ...state.settings };
+        } else {
+            // If missing in state, init with defaults
+            state.settings = { ...DEFAULTS };
+            localSettings = { ...DEFAULTS };
+        }
+
+        // RESTORE THEME FROM FLAT KEY (Priority Source of Truth)
+        if (savedTheme) {
+            localSettings.theme = savedTheme;
+            if (state.settings) state.settings.theme = savedTheme;
+        }
+
+        // Apply Theme Immediately
+        const theme = localSettings.theme || 'light';
+        document.documentElement.setAttribute('data-theme', theme);
+
+        // Auto-redirect to Side Panel if active operation or scan results
+        // ... (logic continues)
+
+        // Auto-redirect to Side Panel if active operation or scan results
+        if (extension_state) {
+            const isRunning = extension_state.isRunning;
+            const currentTab = extension_state.uiNavigation?.currentTab;
+
+            if (isRunning || currentTab === 'scanResults') {
+                if (activeTabId) {
+                    chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
+                    window.close();
+                    return;
+                }
+            }
+        }
+
+        renderUI(extension_state || DEFAULT_STATE);
     } catch (e) {
-        console.warn('ClearConnect: Render fallback', e);
-        renderUI({ ...DEFAULT_STATE });
+        console.error('ClearConnect: Failed to load state', e);
+        renderUI(DEFAULT_STATE);
     }
 });
 
@@ -1661,6 +1850,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
         }
         // State change
         if (changes.extension_state) {
+            // Ignore updates if we are the ones who caused them via auto-save
+            if (isAutoSaving && isAutoSaving.current) {
+                console.log('Skipping render due to local auto-save');
+                return;
+            }
             renderUI(changes.extension_state.newValue);
         }
     }
@@ -1670,8 +1864,20 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
     await checkPage();
     const { extension_state } = await chrome.storage.local.get('extension_state');
-    renderUI(extension_state || DEFAULT_STATE);
+    // 4. Force Home Tab on Open (User Preference)
+    const state = extension_state || DEFAULT_STATE;
+    if (state.uiNavigation && state.uiNavigation.currentTab !== 'home') {
+        state.uiNavigation.currentTab = 'home';
+        // We mutate state locally so renderUI shows home.
+        // We do NOT save to storage to avoid messing up background state if side panel relies on it,
+        // although side panel usually manages its own view or reads from storage. 
+        // If side panel is open, it might read this.
+        // But for popup, we want home. 
+    }
+
+    renderUI(state);
 });
+
 
 // Re-check page when tab URL changes (e.g., user navigates within same tab)
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
@@ -1683,16 +1889,23 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
 });
 
-// Listen for messages from content script (legacy support during transition)
+// Listen for messages from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'COMPLETE') {
         // Update local state with the final state from content script
-        // This ensures sessionCleared and other stats are 100% fresh
         if (message.state) {
-            chrome.storage.local.set({ extension_state: message.state });
-            renderUI(message.state);
+            navigateTo('completed', message.state);
+        } else {
+            navigateTo('completed');
         }
-        navigateTo('completed');
+    }
+
+    // Scan complete -- store results and navigate to scan results view
+    if (message.action === 'SCAN_COMPLETE') {
+        foundScanResults = message.results || [];
+        selectedScanHashes.clear();
+        chrome.storage.local.set({ savedScanResults: foundScanResults });
+        navigateTo('scanResults');
     }
 
     // Real-time scroll progress updates during scanning

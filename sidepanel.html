@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClearConnect</title>
+    <link rel="stylesheet" href="popup.css">
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            width: 100%;
+            min-width: 300px;
+            max-width: 420px;
+            max-height: none;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .app {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="app">
+        <!-- Minimal header (no nav icons -- those stay in popup) -->
+        <header class="header" id="app-header">
+            <a class="logo" href="#">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                    <circle cx="8.5" cy="7" r="4" />
+                    <line x1="23" y1="11" x2="17" y2="11" />
+                </svg>
+                <span>ClearConnect</span>
+            </a>
+        </header>
+
+        <!-- Active content injected here -->
+        <div id="sidepanel-content" class="view-section"></div>
+    </div>
+
+
+    <script src="sidepanel.js"></script>
+</body>
+
+</html>

@@ -139,7 +139,7 @@ These modes share a standard 2-step progress UI.
    - **Active UI:** Bottom half active (primary color border). Progress bar fills.
    - **Inactive UI:** Bottom half inactive (desaturated). Progress bar empty.
     - Inactive status text: "Waiting to load all connections"
-   - **Queue:** Uses the live withdrawal queue as message mode.
+   - **Queue:** Uses the same live withdrawal queue as message mode.
     - This is a scrolling list confirming exactly who is being removed in real-time.
     - **Pre-population:** Before starting, the queue is filled with **ALL** people from the scan results (in age mode, matching the age criteria; in count mode, each of the last xx connections found), initially marked as **"pending"** (dimmed).
     - **Active Item:** When processing starts for a person, their item status changes to **"active"**. It is **highlighted with the brand color** and the list **auto-scrolls** to keep this item centered.
