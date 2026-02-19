@@ -29,7 +29,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             chrome.storage.local.get('extension_state').then(({ extension_state }) => {
                 if (extension_state) {
                     extension_state.uiNavigation = { currentTab: 'completed' };
-                    extension_state.viewOnly = true;
                     chrome.storage.local.set({ extension_state });
                 }
             });
