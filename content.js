@@ -124,9 +124,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.isRunning = true;
         state.isPaused = false;
         state.currentMode = message.mode || 'count';
-        // Immediate Mode Support (User requested "direct to withdrawing")
-        const isImmediate = message.immediate === true;
-        state.subMode = isImmediate ? 'withdrawing' : 'scanning';
+        // Continuation Support (User requested "Continue Clearing")
+        const isContinuation = message.isContinuation === true;
+        state.subMode = isContinuation ? 'withdrawing' : 'scanning';
         state.lastError = null;
 
         state.settings.targetCount = message.count || 999999;
@@ -148,7 +148,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.sessionLog = []; // Reset log on new run? Or keep? Reset for new run seems safer.
         state.lastRunResult = null; // Clear previous run result when starting new run
 
-        if (!isImmediate) {
+        if (!isContinuation) {
             state.sessionCleared = []; // New session: Clear history
         }
         // else: Keep sessionCleared to append new results
@@ -160,7 +160,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // Save state and start
         saveState();
-        startProcess(isImmediate);
+        startProcess(isContinuation);
 
     } else if (message.action === 'STOP_WITHDRAW') {
         const msg = state.stats.processed > 0 ?
@@ -196,6 +196,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.isRunning = true;
         state.currentMode = 'message';
         state.subMode = 'scanning';
+
+        // Hydrate settings for scan duration
+        state.settings.safeMode = message.safeMode !== false;
+        state.settings.safeThreshold = message.safeThreshold || 1;
+        state.settings.safeUnit = message.safeUnit || 'month';
+        state.settings.debugMode = message.debugMode === true;
+
         state.sessionLog = []; // Reset log
         saveState();
         scanConnections();
@@ -219,10 +226,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         showConnection(message.hash);
 
     } else if (message.action === 'GET_PENDING_COUNT') {
-        // Return the current pending count from the page
         const count = getLinkedInTotalCount();
         sendResponse({ count: count });
-        return true; // Keep channel open for async response
+        return true;
     }
 });
 
@@ -242,7 +248,13 @@ function getLinkedInTotalCount() {
         const text = span.textContent || '';
         const match = text.match(/People\s*\(([0-9,]+)\)/i);
         if (match) {
-            return parseInt(match[1].replace(/,/g, ''), 10);
+            const count = parseInt(match[1].replace(/,/g, ''), 10);
+            if (state.stats.pendingInvitations !== count) {
+                state.stats.pendingInvitations = count;
+                state.stats.pendingUpdatedAt = Date.now();
+                saveState();
+            }
+            return count;
         }
     }
     return null;
@@ -268,8 +280,6 @@ function getConnectionMessage(btn) {
 }
 
 // Track found matching people during scroll
-// function normalizeMessage(text) { ... } removed in favor of more complex version below
-
 // function normalizeMessage(text) { ... } removed in favor of more complex version below
 
 // Check if connection matches any message pattern
@@ -329,9 +339,9 @@ async function clickLoadMoreButton() {
     if (loadMore) {
         console.log('ClearConnect: Found Load More button, clicking...');
         loadMore.scrollIntoView({ behavior: 'auto', block: 'center' });
-        await wait(200);
+        await wait(50); // Minimal delay for scroll to settle
         loadMore.click();
-        await wait(1000); // Wait for results to load
+        await wait(300); // Reduced wait for load pulse
         return true;
     }
     return false;
@@ -356,15 +366,15 @@ function isAtScrollBottom() {
     return window.scrollY + window.innerHeight >= document.body.scrollHeight - 50;
 }
 
-async function startProcess(isImmediate = false) {
+async function startProcess(isContinuation = false) {
     scrollContainer = findScrollContainer();
     console.log('ClearConnect: Scroll container', scrollContainer ? 'found' : 'using window');
 
-    if (!isImmediate) {
+    if (!isContinuation) {
         updateStatus('Scrolling to bottom...', 0);
         await scrollToBottom();
     } else {
-        console.log('ClearConnect: Immediate mode - Skipping scroll');
+        console.log('ClearConnect: Continuation - Skipping scroll');
     }
 
     // Reset scan state
@@ -508,7 +518,7 @@ async function scanForTargets() {
 async function scrollToBottom() {
     let lastCount = 0;
     let noChange = 0;
-    let maxRetries = 30;
+    let maxRetries = 10; // Reduced from 30 for faster failure when truly stuck
     let lastCardElement = null;
 
     const linkedInTotal = getLinkedInTotalCount() || 1000; // fallback estimate
@@ -518,6 +528,20 @@ async function scrollToBottom() {
     sendScrollProgress(0, linkedInTotal);
 
     while (state.isRunning && noChange < maxRetries) {
+        // PROACTIVE BUTTON CHECK: Hit it immediately if it exists
+        if (await clickLoadMoreButton()) {
+            noChange = 0;
+            // Immediate re-scroll after button click if content starts flowing
+        }
+
+        const initialHeight = getScrollHeight();
+        const initialCount = findWithdrawButtons().length;
+
+        scrollTo(initialHeight);
+
+        // REACTIVE WAIT: Proceed the instant content loads
+        await waitForContentChange(initialHeight, initialCount, 2000);
+
         const buttons = findWithdrawButtons();
 
         // Progressive Scan for Age Mode
@@ -671,9 +695,21 @@ async function scrollToBottom() {
         const nearLinkedInCount = currentCount >= (linkedInTotal - tolerance);
 
         // Conditions to break loop:
-        // 1. We are near the official total AND haven't seen changes for a bit (fast exit)
-        if (nearLinkedInCount && noChange >= 2) {
-            console.log('ClearConnect: Reached near LinkedIn total count, proceeding');
+        // 1. We reached or exceeded the official total
+        if (currentCount >= linkedInTotal) {
+            console.log('ClearConnect: Reached LinkedIn total count, proceeding');
+            break;
+        }
+
+        // 2. We are VERY near the official total AND haven't seen changes for 1 poll (fast exit)
+        if (currentCount >= (linkedInTotal - 15) && noChange >= 1) {
+            console.log('ClearConnect: Very near LinkedIn total count, proceeding early');
+            break;
+        }
+
+        // 3. We are near the official total AND haven't seen changes for 2 polls (standard exit)
+        if (currentCount >= (linkedInTotal - tolerance) && noChange >= 2) {
+            console.log('ClearConnect: Near LinkedIn total count, proceeding');
             break;
         }
 
@@ -827,7 +863,8 @@ function isSafe(button) {
     else return true; // hour/minute/second = very recent, always safe (too new to withdraw)
 
     let thresholdMonths = 0;
-    if (state.settings.safeUnit === 'month') thresholdMonths = state.settings.safeThreshold;
+    if (state.settings.safeUnit === 'year') thresholdMonths = state.settings.safeThreshold * 12;
+    else if (state.settings.safeUnit === 'month') thresholdMonths = state.settings.safeThreshold;
     else if (state.settings.safeUnit === 'week') thresholdMonths = state.settings.safeThreshold / 4;
     else if (state.settings.safeUnit === 'day') thresholdMonths = state.settings.safeThreshold / 30;
     return ageInMonths > thresholdMonths;
@@ -919,7 +956,7 @@ async function processNext() {
     if (state.currentMode === 'age' && shouldStop(btn)) {
         if (state.stats.processed === 0) {
             const unitLabel = state.settings.ageValue === 1 ? state.settings.ageUnit : state.settings.ageUnit + 's';
-            complete(`No connections sent ${state.settings.ageValue} ${unitLabel} ago and older. Oldest is ${ageText}.`, { oldestRemaining: age }, 'success');
+            complete(`There were no connections older than ${state.settings.ageValue} ${unitLabel}`, { oldestRemaining: age }, 'partial');
         } else {
             complete(`Age limit reached at ${personName} (${ageText}).`, { oldestRemaining: age }, 'success');
         }
@@ -935,7 +972,7 @@ async function processNext() {
         status: 'active'
     });
 
-    btn.scrollIntoView({ behavior: 'auto', block: 'center' });
+    highlightConnection(btn, 'active');
     await wait(150);
 
     let confirmed = false;
@@ -1220,19 +1257,67 @@ function wait(ms) {
     return new Promise(r => setTimeout(r, ms));
 }
 
+/**
+ * Reactive wait that polls for content changes (height or count)
+ * Returns immediately when change is detected or timeout is reached.
+ */
+async function waitForContentChange(lastHeight, lastCount, maxWait = 2500) {
+    const start = Date.now();
+    const pollInterval = 100;
+
+    while (Date.now() - start < maxWait) {
+        if (!state.isRunning) return false;
+
+        const currentHeight = getScrollHeight();
+        const currentCount = findWithdrawButtons().length;
+
+        if (currentHeight > lastHeight + 50 || currentCount > lastCount) {
+            return true; // Content loaded!
+        }
+
+        await wait(pollInterval);
+    }
+    return false; // Timed out
+}
+
 // Check for "Hi [Name]," or "Hello [Name]," greeting
+/**
+ * Aggressive normalization for grouping messages.
+ * Collapses whitespace, lowercases, strips greetings and names, and masks variable data.
+ */
 function normalizeMessage(text) {
     if (!text) return '';
-    let normalized = text.trim();
-    // specific patterns to remove: Hi/Hello/Hey [Name]
-    // Matches start of string, common greetings, name (up to 40 chars), and terminator
-    normalized = normalized.replace(/^(Hi|Hello|Hey|Dear|Good morning|Good afternoon|Good evening)\s+[\s\S]{1,40}?[:,\!\-\u2013\u2014]\s*/i, '');
 
-    // Normalize currency: Replace $100, $1,000, $50.00 with [AMOUNT]
-    normalized = normalized.replace(/\$\d+(?:,\d{3})*(?:\.\d+)?/g, '[AMOUNT]');
+    // 1. Lowercase and collapse whitespace
+    let normalized = text.toLowerCase().trim()
+        .replace(/\s+/g, ' '); // Collapse tabs, newlines, multiple spaces
 
-    return normalized.trim();
+    // 2. Remove common greetings and recipient names
+    // Matches "hi [name],", "hello [name]!", etc. handles names up to 40 chars
+    // Includes "reaching out about" as it often precedes the name or recipient context
+    // Hyphens (-) are allowed in names (e.g. Ching-Wen)
+    const greetingMatch = normalized.match(/^(?:hi|hello|hey|dear|good morning|good afternoon|good evening|reaching out about|use of)\s+[\w\s\-]{1,40}?[,:\!\-\u2013\u2014]\s*/i);
+    if (greetingMatch) {
+        normalized = normalized.substring(greetingMatch[0].length).trim();
+    }
+
+    // 3. Mask variable data to prevent group splitting
+    // Currency: $100, $1,000.00 -> [amount]
+    normalized = normalized.replace(/\$\d+(?:,\d{3})*(?:\.\d+)?/g, '[amount]');
+
+    // Phone numbers: +1 (917) 843-5982, 332-240-0669 -> [phone]
+    normalized = normalized.replace(/(?:\+?\d{1,2}\s?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g, '[phone]');
+
+    // Links: https://calendar.app.google/... -> [link]
+    normalized = normalized.replace(/https?:\/\/[^\s]+/g, '[link]');
+
+    // 4. Strip punctuation for grouping (helps "Topic." vs "Topic")
+    // Keep internal punctuation but strip trailing/leading
+    normalized = normalized.replace(/[.!?]+$/, '').trim();
+
+    return normalized;
 }
+
 
 function hashMessage(text) {
     // Simple hash for grouping
@@ -1252,7 +1337,7 @@ function highlightConnection(element, type) {
     if (!card) return;
 
     // Remove existing
-    card.classList.remove('cc-highlight-processing', 'cc-highlight-skip');
+    card.classList.remove('cc-highlight-processing', 'cc-highlight-skip', 'cc-highlight-active');
 
     if (type === 'processing') {
         card.classList.add('cc-highlight-processing');
@@ -1262,8 +1347,15 @@ function highlightConnection(element, type) {
         card.style.transition = 'background 0.5s';
         card.style.backgroundColor = '#fff3cd'; // Light yellow
         setTimeout(() => {
-            card.style.backgroundColor = originalBg || '';
+            if (card.classList.contains('cc-highlight-processing')) {
+                card.style.backgroundColor = originalBg || '';
+            }
         }, 2000);
+    } else if (type === 'active') {
+        card.classList.add('cc-highlight-active');
+        card.style.transition = 'background 0.3s, border 0.3s';
+        card.style.backgroundColor = '#fee2e2'; // Light red background
+        card.style.border = '2px solid #ef4444'; // Bright red border
     } else if (type === 'skip') {
         card.classList.add('cc-highlight-skip');
     }
@@ -1288,11 +1380,19 @@ async function scanConnections() {
     for (let i = 0; i < maxScrolls; i++) {
         if (!state.isRunning) break;
 
-        // Scroll to bottom using helper
-        const scrollHeight = getScrollHeight();
-        scrollTo(scrollHeight);
+        // PROACTIVE BUTTON CHECK: Fast scan support
+        if (await clickLoadMoreButton()) {
+            noChangeCount = 0;
+        }
 
-        await wait(1500); // Wait for load
+        const lastHeight = getScrollHeight();
+        const lastCount = findWithdrawButtons().length;
+
+        // Scroll to bottom using helper
+        scrollTo(lastHeight);
+
+        // REACTIVE WAIT: No more "blind" 1500ms or 800ms delays
+        await waitForContentChange(lastHeight, lastCount, 2500);
 
         // Check for growth
         const currentHeight = getScrollHeight();
@@ -1344,10 +1444,16 @@ async function scanConnections() {
             // Stricter check: only stop if we're close to the total count or have tried many times
             const linkedInTotal = getLinkedInTotalCount();
             const loadedCount = buttons.length;
-            const isCloseEnough = linkedInTotal && loadedCount >= (linkedInTotal - 40); // Within 40 items
 
-            if (isCloseEnough && noChangeCount >= 2) {
-                console.log('ClearConnect: Reached total count, stopping.');
+            let fuzzyStop = false;
+            if (linkedInTotal) {
+                if (loadedCount >= linkedInTotal) fuzzyStop = true;
+                else if (loadedCount >= (linkedInTotal - 15) && noChangeCount >= 1) fuzzyStop = true;
+                else if (loadedCount >= (linkedInTotal - 40) && noChangeCount >= 2) fuzzyStop = true;
+            }
+
+            if (fuzzyStop) {
+                console.log('ClearConnect: Reached total count (fuzzy), stopping.');
                 break;
             } else if (noChangeCount >= 2) {
                 console.log('ClearConnect: Scanning stuck, checking for Load More button...');
@@ -1571,7 +1677,10 @@ async function withdrawSelected(selectedHashes) {
             }
             if (!state.isRunning) break;
 
-            highlightConnection(btn, 'processing');
+            // Scroll to center for visibility
+            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            highlightConnection(btn, 'active');
 
             // Highlight Withdraw Button
             const withdrawSpan = btn.querySelector('span');

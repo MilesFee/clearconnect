@@ -1,0 +1,32 @@
+name: Release Extension
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Create extension zip
+      run: |
+        mkdir dist
+        # Copy essential files to a temp directory
+        mkdir temp_extension
+        cp -r manifest.json *.js *.html *.css icons temp_extension/
+        
+        # Zip the contents of the temp directory
+        cd temp_extension
+        zip -r ../dist/clearconnect-extension.zip .
+        cd ..
+        
+    - name: Upload Release Asset
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/clearconnect-extension.zip

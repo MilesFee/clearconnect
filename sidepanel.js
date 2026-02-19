@@ -29,28 +29,110 @@ let foundScanResults = [];
 // ============ TOPIC EXTRACTION ============
 function extractTopicFromMessage(msg) {
     if (!msg) return null;
+
+    // Remove greetings for topic extraction pass
+    // Hyphens (-) are allowed in names (e.g. Ching-Wen)
+    const cleanMsg = msg.replace(/^(?:Hi|Hello|Hey|Dear|Good morning|Good afternoon|Good evening|Reaching out about)\s+[\w\s\-]{1,40}?[,:\!\-\u2013\u2014]\s*/i, '').trim();
+
+
     const patterns = [
-        /(?:interested in|about|regarding|re:|for)\s+["']?([A-Z][^.!?"'\n]{5,60})/i,
-        /(?:position|role|opportunity|project|job)\s*(?:at|for|with)?\s+["']?([A-Z][^.!?"'\n]{3,40})/i,
-        /(?:reaching out|connect).*?(?:about|regarding)\s+([A-Z][^.!?"'\n]{5,50})/i,
+        // Marker-based extraction (The user's failure cases)
+        // High priority: survey/phone call on [Topic] -> captures topic before later markers like "working with"
+        /(?:survey call on|phone call on|consulting opportunity (?:offering|for)|paid consultation call on|paid 1-hour consulting call on)\s+([A-Z][^.!?\"'\n]{3,80})/i,
+
+        /(?:familiar with|experts in|speak to|use of|experts (?:that|who) can speak to)\s+(?:the\s+)?([A-Z][^.!?\"'\n]{3,80})/i,
+
+        // Context markers (Interest/About) - moved up to avoid "working with a consulting client" false positives
+        /(?:interested in|about|regarding|re:)\s+["']?([A-Z][^.!?\"'\n]{5,80})/i,
+
+        /(?:evaluating and working with|experience evaluating and working with|experience working with and evaluating|working with)\s+([A-Z][^.!?\"'\n]{3,80})/i,
+
+        /(?:survey call on|phone call on|consulting opportunity (?:offering|for)).*?(?:working with|speak to|evaluating and working with)\s+([A-Z][^.!?\"'\n]{3,80})/i,
+
+
+        // Classic patterns
+        /(?:position|role|opportunity|project|job)\s*(?:at|for|with)?\s+["']?([A-Z][^.!?\"'\n]{3,60})/i,
+        /(?:reaching out|connect).*?(?:about|regarding)\s+([A-Z][^.!?\"'\n]{5,70})/i,
     ];
+
     for (const pat of patterns) {
-        const m = msg.match(pat);
-        if (m) return m[1].trim();
+        const m = cleanMsg.match(pat);
+        if (m) {
+            let topic = m[1].trim();
+            // Post-process to remove trailing noise (like "like...", "from...")
+            // Softened 'for' to only strip 'for experts', 'for our', etc. instead of any 'for'
+            topic = topic.replace(/\s+(?:like|from|providers like|solutions like|etc|for\s+(?:experts|our|your|the))\b.*$/i, '').trim();
+            // Remove leading filler (iterative)
+            let oldTopic;
+            do {
+                oldTopic = topic;
+                topic = topic.replace(/^(?:the|using|a|an|use of|the use of|learning more about|understanding the|understanding|learning|solutions for|solutions regarding|solutions|platforms like|providers like|working with|experts that can speak to|your experience evaluating and working with|your experience with evaluating and working with)\s+/i, '').trim();
+            } while (topic !== oldTopic);
+
+
+
+
+
+            if (topic.length > 3) return topic;
+        }
     }
+
+    // Advanced Fallback: Identify the most likely "Topic" sentence
+    // Skip sentences that start with personal intros
+    const sentences = cleanMsg.split(/[.!?]\s+/);
+    for (const s of sentences) {
+        const trimmed = s.trim();
+        if (trimmed.length > 20 &&
+            !trimmed.match(/^(?:I'm|My name is|I am|Do you have|Would you|Let me know|Hi|Hello)/i)) {
+            // Cut it at 60 chars for a clean title
+            return trimmed.substring(0, 60) + (trimmed.length > 60 ? '...' : '');
+        }
+    }
+
     return null;
 }
 
-// ============ THEME LISTENER ============
+
+// ============ THEME & SETTINGS LISTENER ============
 chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local') {
-        // Theme changes are saved as a flat key 'theme'
+        const needsReRender = ['safeMode', 'safeThreshold', 'safeUnit', 'theme', 'extension_state'].some(key => key in changes);
+
         if (changes.theme) {
             localSettings.theme = changes.theme.newValue;
             document.documentElement.setAttribute('data-theme', changes.theme.newValue);
         }
+
+        // Sync localSettings from extension_state.settings when it changes
+        if (changes.extension_state?.newValue?.settings) {
+            localSettings = { ...DEFAULTS, ...changes.extension_state.newValue.settings };
+        }
+
+        // Trigger re-render if any core UI state or safety settings changed
+        if (needsReRender) {
+            chrome.storage.local.get('extension_state').then(({ extension_state }) => {
+                if (extension_state) renderUI(extension_state);
+            });
+        }
     }
 });
+
+// ============ SAFE MODE NOTICE ============
+function getSafeNoticeHTML(state) {
+    const settings = state?.settings || localSettings;
+    const safeMode = settings.safeMode !== false;
+    const safeThreshold = settings.safeThreshold || 1;
+    const safeUnit = settings.safeUnit || 'month';
+
+    if (!safeMode) return '';
+
+    return `
+        <div id="safe-badge" class="safe-notice" style="margin-bottom: 16px;">
+            Preserves connections sent within the last 
+            <strong>${safeThreshold} ${safeUnit}${safeThreshold > 1 ? 's' : ''}</strong>
+        </div>
+    `;
+}
 
 // ============ FOOTER STATUS ============
 function getFooterStatusHTML(state) {
@@ -163,6 +245,7 @@ function getProgressHTML(state) {
 
     return `
         <div class="view">
+            ${getSafeNoticeHTML(state)}
             <h2 id="active-operation-title" class="section-title">${isScanning ? 'Scanning connections...' : 'Clearing connections...'}</h2>
             ${layoutHTML}
             <div id="progress-actions" class="progress-actions" style="display: flex; gap: 8px; margin-top: 12px;">
@@ -177,6 +260,7 @@ function getProgressHTML(state) {
 function getScanResultsHTML() {
     return `
         <div class="view">
+            ${getSafeNoticeHTML()}
             <h2 class="section-title">Scan Results</h2>
             <p class="scan-desc">Select message groups to withdraw.</p>
             <div id="scan-results-list" class="scan-results-list"></div>
@@ -346,6 +430,15 @@ function getCompletedHTML(state) {
     if (stopType === 'safety') {
         statusTitle = 'Safety Stop'; statusIcon = '&#9888;'; statusClass = 'warning';
         statusMsg = message || `Safety stop. ${clearedPeople.length} cleared.`;
+    } else if (stopType === 'partial') {
+        statusTitle = 'Task Failed Successfully';
+        statusClass = 'info';
+        statusMsg = message || `No connections matched your criteria.`;
+        statusIcon = `
+            <div style="font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 32px; font-weight: bold; line-height: 1; user-select: none; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; margin-left: 1px; margin-top: -1px;">
+                :(
+            </div>
+        `;
     } else if (stopType === 'manual') {
         statusTitle = 'Stopped'; statusIcon = '&#10006;'; statusClass = 'error';
         statusMsg = `Stopped by user. Cleared ${clearedPeople.length}.`;
@@ -383,9 +476,10 @@ function getCompletedHTML(state) {
 
     return `
         <div id="completed-view" class="view">
+            ${getSafeNoticeHTML(state)}
             <!-- Summary Card -->
             <div class="summary-card" style="background:var(--bg-card); border:1px solid var(--border-default); border-radius:12px; padding:20px; text-align:center; margin-bottom:20px; box-shadow:var(--shadow-sm);">
-                <div class="summary-icon ${statusClass}" style="width:48px; height:48px; border-radius:50%; background:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : 'danger'}-bg); color:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : 'danger'}); display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 12px auto;">
+                <div class="summary-icon ${statusClass}" style="width:48px; height:48px; border-radius:50%; background:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : statusClass === 'info' ? 'info' : 'danger'}-bg); color:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : statusClass === 'info' ? 'info' : 'danger'}); display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 12px auto;">
                     ${statusIcon}
                 </div>
                 <h2 style="margin:0 0 8px 0; font-size:18px; color:var(--text-primary);">${statusTitle}</h2>
@@ -665,109 +759,8 @@ function updatePersonStatus(name, newStatus) {
 }
 
 // ============ SCAN RESULTS RENDERER ============
-function renderScanResults(results) {
-    const list = document.getElementById('scan-results-list');
-    const empty = document.getElementById('empty-scan');
-    const withdrawBtn = document.getElementById('withdraw-selected-btn');
+// Duplicate renderScanResults removed. The functional version is at line 257.
 
-    if (!list) return;
-    list.innerHTML = '';
-
-    if (!results || results.length === 0) {
-        if (empty) empty.style.display = 'block';
-        if (withdrawBtn) withdrawBtn.disabled = true;
-        return;
-    }
-
-    if (empty) empty.style.display = 'none';
-
-    results.forEach(item => {
-        const safeMessage = item.message || '';
-        const topic = extractTopicFromMessage(safeMessage) ||
-            `"${escapeHTML(safeMessage.substring(0, 40))}${safeMessage.length > 40 ? '...' : ''}"`;
-        const shortMsg = escapeHTML(safeMessage.substring(0, 60) + (safeMessage.length > 60 ? '...' : ''));
-        const ageRange = item.ages && item.ages.length > 0
-            ? (item.ages.length > 1 ? `${item.ages[item.ages.length - 1]} - ${item.ages[0]}` : item.ages[0])
-            : 'Unknown';
-
-        const div = document.createElement('div');
-        div.className = 'scan-result-item';
-
-        const peopleListHtml = (item.people || []).map(p =>
-            `<div class="person-row">
-                <span class="person-name" data-id="${escapeHTML(p.id)}" style="cursor:pointer;text-decoration:underline;">${escapeHTML(p.name)}</span>
-                <span class="person-age">${escapeHTML(p.age)}</span>
-            </div>`
-        ).join('');
-
-        div.innerHTML = `
-            <div class="scan-result-header">
-                <div class="scan-checkbox-wrapper">
-                    <input type="checkbox" class="scan-checkbox" data-hash="${escapeHTML(item.id)}">
-                </div>
-                <div class="scan-info" title="Click to expand/collapse">
-                    <div class="scan-topic">${topic}</div>
-                    <div class="scan-preview">${shortMsg}</div>
-                </div>
-                <div class="scan-meta">
-                    <span class="scan-count-badge">${item.count}</span>
-                </div>
-            </div>
-            <div class="scan-details" style="display:none;">
-                <div class="scan-detail-row"><strong>Age Range:</strong> ${escapeHTML(ageRange)}</div>
-                <div class="scan-full-message">${escapeHTML(item.fullMessage || safeMessage)}</div>
-                <div class="scan-people-section">
-                    <div class="people-toggle" style="margin-top:8px;cursor:pointer;color:var(--brand-primary);font-size:12px;font-weight:600;">
-                        Show ${item.people ? item.people.length : 0} People
-                    </div>
-                    <div class="people-list" style="display:none;margin-top:8px;border-top:1px solid var(--border-default);padding-top:4px;">
-                        ${peopleListHtml}
-                    </div>
-                </div>
-            </div>
-        `;
-
-        // Checkbox handler
-        const checkbox = div.querySelector('.scan-checkbox');
-        checkbox.addEventListener('change', (e) => {
-            if (e.target.checked) selectedScanHashes.add(item.id);
-            else selectedScanHashes.delete(item.id);
-            updateWithdrawButton();
-        });
-
-        // Expand/collapse group details
-        div.querySelector('.scan-info').addEventListener('click', () => {
-            const details = div.querySelector('.scan-details');
-            details.style.display = details.style.display === 'none' ? 'block' : 'none';
-        });
-
-        // People toggle
-        const peopleToggle = div.querySelector('.people-toggle');
-        const peopleList = div.querySelector('.people-list');
-        if (peopleToggle && peopleList) {
-            peopleToggle.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const hidden = peopleList.style.display === 'none';
-                peopleList.style.display = hidden ? 'block' : 'none';
-                peopleToggle.textContent = hidden ? 'Hide People' : `Show ${item.people ? item.people.length : 0} People`;
-            });
-        }
-
-        // Person name click -> show on page
-        div.querySelectorAll('.person-name').forEach(link => {
-            link.addEventListener('click', (e) => {
-                const pid = e.target.getAttribute('data-id');
-                if (activeTabId && pid) {
-                    chrome.tabs.sendMessage(activeTabId, { action: 'SHOW_CONNECTION', hash: pid });
-                }
-            });
-        });
-
-        list.appendChild(div);
-    });
-
-    updateWithdrawButton();
-}
 
 function updateWithdrawButton() {
     const btn = document.getElementById('withdraw-selected-btn');
@@ -840,6 +833,7 @@ function setupEventDelegation() {
                 chrome.storage.local.get('extension_state').then(({ extension_state }) => {
                     const state = extension_state || DEFAULT_STATE;
                     state.uiNavigation = { currentTab: 'scanResults' };
+                    console.log('ClearConnect Side Panel: Saving state (resume-scan-results):', state);
                     chrome.storage.local.set({ extension_state: state }).then(() => renderUI(state));
                 });
                 break;
@@ -859,20 +853,25 @@ function setupEventDelegation() {
             case 'withdraw-selected':
                 if (!activeTabId || selectedScanHashes.size === 0) break;
                 try {
-                    await chrome.tabs.sendMessage(activeTabId, {
-                        action: 'WITHDRAW_SELECTED',
-                        selectedHashes: Array.from(selectedScanHashes),
-                        debugMode: localSettings.debugMode === true,
-                        safeMode: localSettings.safeMode !== false,
-                        safeThreshold: localSettings.safeThreshold || 1,
-                        safeUnit: localSettings.safeUnit || 'month'
-                    });
-                    // Preserve remaining groups for "Clear More" workflow
-                    const remainingResults = foundScanResults.filter(item => !selectedScanHashes.has(item.id));
-                    foundScanResults = remainingResults;
-                    chrome.storage.local.set({ savedScanResults: remainingResults });
+                    // Fetch latest settings from storage before sending to content.js
+                    chrome.storage.local.get(['safeMode', 'safeThreshold', 'safeUnit', 'debugMode']).then(async (current) => {
+                        await chrome.tabs.sendMessage(activeTabId, {
+                            action: 'WITHDRAW_SELECTED',
+                            selectedHashes: Array.from(selectedScanHashes),
+                            debugMode: current.debugMode === true,
+                            safeMode: current.safeMode !== false,
+                            safeThreshold: current.safeThreshold || 1,
+                            safeUnit: current.safeUnit || 'month'
+                        });
 
-                    selectedScanHashes.clear();
+                        // Preserve remaining groups for "Clear More" workflow
+                        const remainingResults = foundScanResults.filter(item => !selectedScanHashes.has(item.id));
+                        foundScanResults = remainingResults;
+
+                        // Only save the scan results, don't spread settings here
+                        chrome.storage.local.set({ savedScanResults: remainingResults });
+                        selectedScanHashes.clear();
+                    });
                 } catch (e) {
                     console.log('Content script not ready:', e);
                 }
@@ -880,23 +879,25 @@ function setupEventDelegation() {
 
             case 'cancel-scan':
                 // Navigate back to home (popup will show home)
-                const { extension_state: cancelState } = await chrome.storage.local.get('extension_state');
-                if (cancelState) {
-                    cancelState.uiNavigation = { currentTab: 'home' };
-                    await chrome.storage.local.set({ extension_state: cancelState });
-                }
-                window.close();
+                chrome.storage.local.get('extension_state').then(async ({ extension_state }) => {
+                    if (extension_state) {
+                        extension_state.uiNavigation = { currentTab: 'home' };
+                        await chrome.storage.local.set({ extension_state });
+                    }
+                    window.close();
+                });
                 break;
 
             case 'done':
                 // Reset navigation to home and close the side panel
-                const { extension_state: doneState } = await chrome.storage.local.get('extension_state');
-                if (doneState) {
-                    doneState.uiNavigation = { currentTab: 'home' };
-                    // Preserve lastRunResult so stats page can show it
-                    await chrome.storage.local.set({ extension_state: doneState });
-                }
-                window.close();
+                chrome.storage.local.get('extension_state').then(async ({ extension_state }) => {
+                    if (extension_state) {
+                        extension_state.uiNavigation = { currentTab: 'home' };
+                        // Preserve lastRunResult so stats page can show it
+                        await chrome.storage.local.set({ extension_state });
+                    }
+                    window.close();
+                });
                 break;
 
             case 'toggle-session':
@@ -918,37 +919,46 @@ function setupEventDelegation() {
                 const ageValueInput = document.getElementById('continue-age-value');
                 const ageUnitSelect = document.getElementById('continue-age-unit');
 
-                const newSettings = { ...localSettings, currentMode: selectedMode };
-
-                if (selectedMode === 'count' && countInput) {
-                    newSettings.withdrawCount = parseInt(countInput.value, 10) || 10;
-                } else if (selectedMode === 'age' && ageValueInput && ageUnitSelect) {
-                    newSettings.ageValue = parseInt(ageValueInput.value, 10) || 3;
-                    newSettings.ageUnit = ageUnitSelect.value;
-                }
-
                 // Update settings in storage
-                // IMPORTANT: Ensure we preserve the theme!
-                newSettings.theme = localSettings.theme || 'light';
-                await chrome.storage.local.set(newSettings);
-                localSettings = { ...localSettings, ...newSettings };
+                // PASSIVE UPDATE: Only update mode and specific run-time inputs.
+                // WE NEVER OVERWRITE safeMode, safeThreshold, or safeUnit from the sidebar.
+                chrome.storage.local.get(['extension_state']).then(async ({ extension_state }) => {
+                    const currentSettings = extension_state?.settings || DEFAULTS;
+                    const finalSettings = {
+                        ...currentSettings,
+                        currentMode: selectedMode,
+                        withdrawCount: (selectedMode === 'count' && countInput) ? (parseInt(countInput.value, 10) || 10) : localSettings.withdrawCount,
+                        ageValue: (selectedMode === 'age' && ageValueInput) ? (parseInt(ageValueInput.value, 10) || 3) : localSettings.ageValue,
+                        ageUnit: (selectedMode === 'age' && ageUnitSelect) ? ageUnitSelect.value : localSettings.ageUnit
+                    };
 
-                // Trigger clearing
-                if (activeTabId) {
-                    chrome.tabs.sendMessage(activeTabId, {
-                        action: 'START_WITHDRAW',
-                        mode: selectedMode,
-                        count: newSettings.withdrawCount,
-                        ageValue: newSettings.ageValue,
-                        ageUnit: newSettings.ageUnit,
-                        safeMode: newSettings.safeMode !== false,
-                        safeThreshold: newSettings.safeThreshold || 1,
-                        safeUnit: newSettings.safeUnit || 'month',
-                        debugMode: newSettings.debugMode === true
-                    }).catch(err => {
-                        console.error('Failed to start continue clearing:', err);
-                    });
-                }
+                    // Only update the non-safety keys to storage (flat keys for content.js and state for continuity)
+                    const updatePayload = {
+                        currentMode: finalSettings.currentMode,
+                        withdrawCount: finalSettings.withdrawCount,
+                        ageValue: finalSettings.ageValue,
+                        ageUnit: finalSettings.ageUnit
+                    };
+                    await chrome.storage.local.set(updatePayload);
+                    localSettings = { ...localSettings, ...finalSettings };
+
+                    // Trigger clearing with absolute freshest settings from extension_state
+                    if (activeTabId) {
+                        chrome.tabs.sendMessage(activeTabId, {
+                            action: 'START_WITHDRAW',
+                            mode: selectedMode,
+                            count: finalSettings.withdrawCount,
+                            ageValue: finalSettings.ageValue,
+                            ageUnit: finalSettings.ageUnit,
+                            safeMode: finalSettings.safeMode !== false,
+                            safeThreshold: finalSettings.safeThreshold || 1,
+                            safeUnit: finalSettings.safeUnit || 'month',
+                            debugMode: finalSettings.debugMode === true
+                        }).catch(err => {
+                            console.error('Failed to start continue clearing:', err);
+                        });
+                    }
+                });
                 break;
         }
     });
@@ -968,9 +978,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         selectedScanHashes.clear();
         chrome.storage.local.set({ savedScanResults: foundScanResults });
 
-        // Navigate to scan results
+        // Navigate to scan results passively
         chrome.storage.local.get('extension_state').then(({ extension_state }) => {
             const state = extension_state || DEFAULT_STATE;
+            // ONLY modify the navigation property
             state.uiNavigation = { currentTab: 'scanResults' };
             chrome.storage.local.set({ extension_state: state }).then(() => renderUI(state));
         });
@@ -1084,8 +1095,17 @@ window.addEventListener('beforeunload', () => {
 document.addEventListener('DOMContentLoaded', async () => {
     setupEventDelegation();
 
-    const saved = await chrome.storage.local.get(DEFAULTS);
-    localSettings = { ...DEFAULTS, ...saved };
+    // Load and render state first
+    let extension_state;
+    try {
+        const data = await chrome.storage.local.get('extension_state');
+        extension_state = data.extension_state || DEFAULT_STATE;
+    } catch (e) {
+        extension_state = DEFAULT_STATE;
+    }
+
+    // Hydrate localSettings from the state (source of truth)
+    localSettings = { ...DEFAULTS, ...extension_state.settings };
 
     // Apply Theme Immediately
     const theme = localSettings.theme || 'light';
@@ -1095,24 +1115,5 @@ document.addEventListener('DOMContentLoaded', async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) activeTabId = tab.id;
 
-    // Load and render
-    try {
-        const { extension_state } = await chrome.storage.local.get('extension_state');
-        renderUI(extension_state || DEFAULT_STATE);
-    } catch (e) {
-        console.error('ClearConnect Side Panel: Failed to load state', e);
-        renderUI(DEFAULT_STATE);
-    }
-});
-
-// Listen for storage changes
-chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local') {
-        if (changes.theme) {
-            localSettings.theme = changes.theme.newValue;
-            document.documentElement.setAttribute('data-theme', changes.theme.newValue);
-        }
-        if (changes.debugMode) localSettings.debugMode = changes.debugMode.newValue;
-        if (changes.extension_state) renderUI(changes.extension_state.newValue);
-    }
+    renderUI(extension_state);
 });

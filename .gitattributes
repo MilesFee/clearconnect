@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Exclude development files from git archive
+.agent/ export-ignore
+*.md export-ignore
+scripts/ export-ignore
+.git* export-ignore
+.vscode/ export-ignore
