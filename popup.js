@@ -585,7 +585,18 @@ async function renderUI(state) {
                         if (tab?.id) {
                             chrome.tabs.sendMessage(tab.id, { action: 'GET_PENDING_COUNT' })
                                 .then(response => {
-                                    homeSection.innerHTML = getStatsHTML(state, response?.count);
+                                    const count = response?.count;
+                                    if (count !== undefined && count !== null) {
+                                        // Save to storage silenty (don't trigger full re-render)
+                                        chrome.storage.local.get('extension_state').then(({ extension_state }) => {
+                                            if (extension_state?.stats) {
+                                                extension_state.stats.pendingInvitations = count;
+                                                extension_state.stats.pendingUpdatedAt = Date.now();
+                                                chrome.storage.local.set({ extension_state });
+                                            }
+                                        });
+                                    }
+                                    homeSection.innerHTML = getStatsHTML(state, count);
                                 })
                                 .catch(async () => {
                                     // Fallback: Content script might not be loaded yet or crashed. Scrape live.
@@ -608,6 +619,15 @@ async function renderUI(state) {
                                             }
                                         });
                                         const count = results?.[0]?.result;
+                                        if (count !== undefined && count !== null) {
+                                            chrome.storage.local.get('extension_state').then(({ extension_state }) => {
+                                                if (extension_state?.stats) {
+                                                    extension_state.stats.pendingInvitations = count;
+                                                    extension_state.stats.pendingUpdatedAt = Date.now();
+                                                    chrome.storage.local.set({ extension_state });
+                                                }
+                                            });
+                                        }
                                         homeSection.innerHTML = getStatsHTML(state, count);
                                     } catch (e) {
                                         homeSection.innerHTML = getStatsHTML(state, null);
@@ -931,11 +951,12 @@ function getSettingsHTML(state) {
                     
                     <div id="safe-threshold-group" class="inline-threshold" style="display: ${safeMode ? 'flex' : 'none'}">
                         <input type="number" id="safe-threshold" value="${safeThreshold}" min="1" max="60" class="input-sm">
-                        <select id="safe-unit" class="select-sm">
-                            <option value="day" ${safeUnit === 'day' ? 'selected' : ''}>Days</option>
-                            <option value="week" ${safeUnit === 'week' ? 'selected' : ''}>Weeks</option>
-                            <option value="month" ${safeUnit === 'month' ? 'selected' : ''}>Months</option>
-                        </select>
+                                    <select id="safe-unit" class="select-sm">
+                                        <option value="day" ${safeUnit === 'day' ? 'selected' : ''}>Days</option>
+                                        <option value="week" ${safeUnit === 'week' ? 'selected' : ''}>Weeks</option>
+                                        <option value="month" ${safeUnit === 'month' ? 'selected' : ''}>Months</option>
+                                        <option value="year" ${safeUnit === 'year' ? 'selected' : ''}>Years</option>
+                                    </select>
                     </div>
                 </div>
             </div>
@@ -962,6 +983,44 @@ function getSettingsHTML(state) {
 // Auto-Save Helper
 const isAutoSaving = { current: false };
 
+// --- SHARED TIME NORMALIZATION ---
+function normalizeTimeSettings(valueEl, unitEl) {
+    if (!valueEl || !unitEl) return false;
+    let val = parseInt(valueEl.value, 10) || 1;
+    let unit = unitEl.value;
+    let normalized = false;
+
+    if (unit === 'day') {
+        if (val >= 30) {
+            val = Math.floor(val / 30);
+            unit = 'month';
+            normalized = true;
+        } else if (val >= 7 && val % 7 === 0) {
+            val = val / 7;
+            unit = 'week';
+            normalized = true;
+        }
+    } else if (unit === 'week') {
+        if (val >= 4) {
+            val = Math.floor(val / 4);
+            unit = 'month';
+            normalized = true;
+        }
+    } else if (unit === 'month') {
+        if (val >= 12 && val % 12 === 0) {
+            val = val / 12;
+            unit = 'year';
+            normalized = true;
+        }
+    }
+
+    if (normalized) {
+        valueEl.value = val;
+        unitEl.value = unit;
+    }
+    return { val, unit, normalized };
+}
+
 async function autoSaveSettings() {
     isAutoSaving.current = true;
     console.log('Auto-saving settings...');
@@ -971,52 +1030,76 @@ async function autoSaveSettings() {
     const safeUnitEl = document.getElementById('safe-unit');
     const debugModeEl = document.getElementById('debug-mode-toggle');
 
-    // Guard: Ensure elements exist before reading
-    if (!safeModeEl || !safeThresholdEl || !safeUnitEl || !debugModeEl) {
-        isAutoSaving.current = false;
-        return;
+    // Home Page Inputs (may or may not be in DOM)
+    const withdrawCountEl = document.getElementById('withdraw-count');
+    const ageValueEl = document.getElementById('age-value');
+    const ageUnitEl = document.getElementById('age-unit');
+
+    // 1. Gather & Normalize Settings
+    let safeMode = safeModeEl ? safeModeEl.checked : localSettings.safeMode;
+    let debugMode = debugModeEl ? debugModeEl.checked : localSettings.debugMode;
+
+    // Use shared normalization for Safe Mode
+    const safeNorm = normalizeTimeSettings(safeThresholdEl, safeUnitEl);
+    let safeThreshold = safeNorm ? safeNorm.val : (localSettings.safeThreshold || 1);
+    let safeUnit = safeNorm ? safeNorm.unit : (localSettings.safeUnit || 'month');
+
+    // Use shared normalization for Age Mode
+    const ageNorm = normalizeTimeSettings(ageValueEl, ageUnitEl);
+    let ageValue = ageNorm ? ageNorm.val : (localSettings.ageValue || 3);
+    let ageUnit = ageNorm ? ageNorm.unit : (localSettings.ageUnit || 'month');
+
+    let withdrawCount = withdrawCountEl ? (parseInt(withdrawCountEl.value, 10) || 10) : localSettings.withdrawCount;
+
+    // 2. Immediate UI Updates (Bypass storage-render guard for responsiveness)
+    const modeDesc = document.getElementById('mode-desc');
+    const { extension_state: currentState } = await chrome.storage.local.get('extension_state');
+    const currentMode = currentState?.currentMode || 'count';
+
+    if (modeDesc) {
+        modeDesc.textContent = getModeDescription(currentMode, {
+            withdrawCount,
+            ageValue,
+            ageUnit
+        });
     }
 
-    const safeMode = safeModeEl.checked;
-    const safeThreshold = parseInt(safeThresholdEl.value, 10);
-    const safeUnit = safeUnitEl.value;
-    const debugMode = debugModeEl.checked;
+    const safeBadgeText = document.getElementById('safe-badge-text');
+    if (safeBadgeText) {
+        safeBadgeText.textContent = `${safeThreshold} ${safeUnit}${safeThreshold > 1 ? 's' : ''}`;
+    }
 
-    // Toggle visibility of threshold group immediately
     const thresholdGroup = document.getElementById('safe-threshold-group');
     if (thresholdGroup) {
         thresholdGroup.style.display = safeMode ? 'flex' : 'none';
     }
 
-    // Update runtime localSettings
+    // 3. Update runtime localSettings
     localSettings.safeMode = safeMode;
     localSettings.safeThreshold = safeThreshold;
     localSettings.safeUnit = safeUnit;
     localSettings.debugMode = debugMode;
+    localSettings.withdrawCount = withdrawCount;
+    localSettings.ageValue = ageValue;
+    localSettings.ageUnit = ageUnit;
 
-    // Save flat keys to storage to notify Side Panel listeners immediately
+    // 4. Save flat keys for Background/Sidepanel
     await chrome.storage.local.set({
         safeMode,
         safeThreshold,
         safeUnit,
-        debugMode
+        debugMode,
+        withdrawCount,
+        ageValue,
+        ageUnit
     });
 
-    // Persist to storage (extension_state)
-    const { extension_state } = await chrome.storage.local.get('extension_state');
-    const newState = extension_state || { ...DEFAULT_STATE };
+    // 5. Persist to extension_state
+    const newState = currentState || { ...DEFAULT_STATE };
+    newState.settings = { ...newState.settings, ...localSettings };
 
-    // Ensure nested object exists
-    newState.settings = newState.settings || { ...DEFAULTS };
-
-    // Update settings in state
-    newState.settings.safeMode = safeMode;
-    newState.settings.safeThreshold = safeThreshold;
-    newState.settings.safeUnit = safeUnit;
-    newState.settings.debugMode = debugMode;
-    newState.settings.withdrawCount = parseInt(document.getElementById('withdraw-count')?.value, 10) || DEFAULTS.withdrawCount;
-    newState.settings.ageValue = parseInt(document.getElementById('age-value')?.value, 10) || DEFAULTS.ageValue;
-    newState.settings.ageUnit = document.getElementById('age-unit')?.value || DEFAULTS.ageUnit;
+    await chrome.storage.local.set({ extension_state: newState });
+    console.log('Settings auto-saved');
 
     if (localSettings.theme) {
         newState.settings.theme = localSettings.theme;
@@ -1335,10 +1418,22 @@ function setupEventDelegation() {
         handleAction(action, target);
     });
 
-    // Settings Auto-Save Delegation
+    // Generic Change Listeners for Auto-Save
     appRoot.addEventListener('change', (e) => {
-        if (e.target.matches('#safe-mode-toggle, #safe-threshold, #safe-unit, #debug-mode-toggle')) {
+        const autoSaveSelectors = [
+            '#safe-mode-toggle', '#safe-threshold', '#safe-unit', '#debug-mode-toggle',
+            '#withdraw-count', '#age-value', '#age-unit'
+        ].join(', ');
+
+        if (e.target.matches(autoSaveSelectors)) {
             console.log('Setting changed:', e.target.id);
+            autoSaveSettings();
+        }
+    });
+
+    // Immediate update on keydown for number inputs (responds while typing)
+    appRoot.addEventListener('input', (e) => {
+        if (e.target.matches('#withdraw-count, #age-value, #safe-threshold')) {
             autoSaveSettings();
         }
     });
@@ -1457,15 +1552,16 @@ async function handleAction(action, target) {
 
             if (extension_state?.lastRunResult) {
                 extension_state.lastRunResult = null;
+                // Update local state copy if possible, though storage listener will do it
+                if (typeof state !== 'undefined') state.lastRunResult = null;
                 await chrome.storage.local.set({ extension_state });
             } else {
                 // Otherwise it's the idle "Ready" message - hide for this session
                 localSettings.hideReadyStatus = true;
-                // We don't save localSettings.hideReadyStatus to storage usually, 
-                // but if we did, we'd do it here. 
-                // For now, just suppressing the re-render is enough if it WAS triggering one.
-                // If it wasn't triggering one, we wouldn't see a flicker. 
-                // The flickering implies storage WAS changing.
+                // Suppress re-render to avoid flicker
+                isAutoSaving.current = true;
+                renderUI(state);
+                setTimeout(() => isAutoSaving.current = false, 100);
             }
 
             // 4. Release lock
@@ -1616,15 +1712,8 @@ async function startOperation(options = {}) {
             safeThreshold: localSettings.safeThreshold,
             safeUnit: localSettings.safeUnit || 'month',
             debugMode: localSettings.debugMode,
-            immediate: options.immediate === true
+            isContinuation: options.isContinuation === true
         });
-
-        // Reset viewOnly flag on new run
-        const { extension_state } = await chrome.storage.local.get('extension_state');
-        if (extension_state) {
-            extension_state.viewOnly = false;
-            await chrome.storage.local.set({ extension_state });
-        }
 
         // Open side panel and close popup
         chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
@@ -1641,14 +1730,13 @@ async function startScan() {
         return;
     }
     try {
-        await chrome.tabs.sendMessage(activeTabId, { action: 'SCAN_CONNECTIONS' });
-
-        // Reset viewOnly flag on new scan
-        const { extension_state } = await chrome.storage.local.get('extension_state');
-        if (extension_state) {
-            extension_state.viewOnly = false;
-            await chrome.storage.local.set({ extension_state });
-        }
+        await chrome.tabs.sendMessage(activeTabId, {
+            action: 'SCAN_CONNECTIONS',
+            safeMode: localSettings.safeMode !== false,
+            safeThreshold: localSettings.safeThreshold || 1,
+            safeUnit: localSettings.safeUnit || 'month',
+            debugMode: localSettings.debugMode === true
+        });
 
         // Open side panel and close popup
         chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
@@ -1719,7 +1807,7 @@ async function continueOperation() {
 
     // Prepare overrides
     const options = {
-        immediate: true,
+        isContinuation: true,
         mode: selectedMode
     };
 
