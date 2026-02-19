@@ -318,6 +318,25 @@ function scrollTo(y) {
     }
 }
 
+async function clickLoadMoreButton() {
+    // Find buttons with "Load more" text
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const loadMore = buttons.find(b => {
+        const text = (b.textContent || '').trim().toLowerCase();
+        return text === 'load more' || text === 'show more results'; // Inclusion of similar variants
+    });
+
+    if (loadMore) {
+        console.log('ClearConnect: Found Load More button, clicking...');
+        loadMore.scrollIntoView({ behavior: 'auto', block: 'center' });
+        await wait(200);
+        loadMore.click();
+        await wait(1000); // Wait for results to load
+        return true;
+    }
+    return false;
+}
+
 function scrollBy(dy) {
     if (scrollContainer) {
         scrollContainer.scrollTop += dy;
@@ -607,10 +626,29 @@ async function scrollToBottom() {
         } else {
             noChange++;
 
+            // CHECK FOR LOAD MORE PROACTIVELY IF STUCK OR NEAR BOTTOM
+            if (noChange >= 2 || isAtScrollBottom()) {
+                console.log('ClearConnect: Checking for Load More button...');
+                const clicked = await clickLoadMoreButton();
+                if (clicked) {
+                    noChange = 0;
+                    baseWait = Math.max(200, baseWait - 30);
+                    continue; // Skip jiggle if we clicked
+                }
+            }
+
             // Only do jiggle when stuck (2+ attempts with no change)
             if (noChange >= 2 && noChange % 2 === 0) {
                 let msg = `Triggering load... (${noChange}/${maxRetries})`;
                 sendScrollProgress(currentCount, linkedInTotal, msg);
+
+                // RE-FIND CONTAINER: Layout might have shifted
+                const newContainer = findScrollContainer();
+                if (newContainer && newContainer !== scrollContainer) {
+                    console.log('ClearConnect: Scroll container shifted, updating...');
+                    scrollContainer = newContainer;
+                }
+
                 // Natural jiggle - smooth scroll up, pause, smooth scroll back
                 scrollBy(-400);
                 await wait(400);
@@ -653,10 +691,7 @@ async function scrollToBottom() {
 
         // Jiggle logic if stuck
         if (noChange >= 3) {
-            console.log('ClearConnect: Jiggling to trigger load...');
-            scrollBy(-600);
-            await wait(600);
-            scrollTo(getScrollHeight());
+            // Redundant check removed to favor proactive check above
         }
     }
 
@@ -1314,15 +1349,30 @@ async function scanConnections() {
             if (isCloseEnough && noChangeCount >= 2) {
                 console.log('ClearConnect: Reached total count, stopping.');
                 break;
-            } else if (noChangeCount >= 5) { // Increased from 2 to 5 for slow connections
-                if (linkedInTotal && loadedCount < (linkedInTotal - 100)) {
-                    // We are stuck but far from total. Try a "jiggle" scroll?
-                    window.scrollBy(0, -500);
-                    await wait(800);
-                    scrollTo(getScrollHeight());
-                } else {
-                    console.log('ClearConnect: Stuck with no growth, stopping.');
-                    break;
+            } else if (noChangeCount >= 2) {
+                console.log('ClearConnect: Scanning stuck, checking for Load More button...');
+                const clicked = await clickLoadMoreButton();
+                if (clicked) {
+                    noChangeCount = 0;
+                    continue;
+                }
+
+                if (noChangeCount >= 4) {
+                    // RE-FIND CONTAINER
+                    const newContainer = findScrollContainer();
+                    if (newContainer && newContainer !== scrollContainer) {
+                        scrollContainer = newContainer;
+                    }
+
+                    if (linkedInTotal && loadedCount < (linkedInTotal - 100)) {
+                        // We are stuck but far from total. Try a "jiggle" scroll?
+                        window.scrollBy(0, -500);
+                        await wait(800);
+                        scrollTo(getScrollHeight());
+                    } else {
+                        console.log('ClearConnect: Stuck with no growth, stopping.');
+                        break;
+                    }
                 }
             }
         } else {
