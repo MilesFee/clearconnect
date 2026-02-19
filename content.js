@@ -329,9 +329,9 @@ async function clickLoadMoreButton() {
     if (loadMore) {
         console.log('ClearConnect: Found Load More button, clicking...');
         loadMore.scrollIntoView({ behavior: 'auto', block: 'center' });
-        await wait(200);
+        await wait(50); // Minimal delay for scroll to settle
         loadMore.click();
-        await wait(1000); // Wait for results to load
+        await wait(300); // Reduced wait for load pulse
         return true;
     }
     return false;
@@ -518,6 +518,12 @@ async function scrollToBottom() {
     sendScrollProgress(0, linkedInTotal);
 
     while (state.isRunning && noChange < maxRetries) {
+        // PROACTIVE BUTTON CHECK: Hit it immediately if it exists
+        if (await clickLoadMoreButton()) {
+            noChange = 0;
+            // No need to wait for full heartbeat, continue loop to keep scrolling
+        }
+
         const buttons = findWithdrawButtons();
 
         // Progressive Scan for Age Mode
@@ -1288,11 +1294,16 @@ async function scanConnections() {
     for (let i = 0; i < maxScrolls; i++) {
         if (!state.isRunning) break;
 
+        // PROACTIVE BUTTON CHECK: Fast scan support
+        if (await clickLoadMoreButton()) {
+            noChangeCount = 0;
+        }
+
         // Scroll to bottom using helper
         const scrollHeight = getScrollHeight();
         scrollTo(scrollHeight);
 
-        await wait(1500); // Wait for load
+        await wait(800); // Reduced from 1500 for faster scanning
 
         // Check for growth
         const currentHeight = getScrollHeight();
