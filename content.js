@@ -521,8 +521,16 @@ async function scrollToBottom() {
         // PROACTIVE BUTTON CHECK: Hit it immediately if it exists
         if (await clickLoadMoreButton()) {
             noChange = 0;
-            // No need to wait for full heartbeat, continue loop to keep scrolling
+            // Immediate re-scroll after button click if content starts flowing
         }
+
+        const initialHeight = getScrollHeight();
+        const initialCount = findWithdrawButtons().length;
+
+        scrollTo(initialHeight);
+
+        // REACTIVE WAIT: Proceed the instant content loads
+        await waitForContentChange(initialHeight, initialCount, 2000);
 
         const buttons = findWithdrawButtons();
 
@@ -1226,6 +1234,29 @@ function wait(ms) {
     return new Promise(r => setTimeout(r, ms));
 }
 
+/**
+ * Reactive wait that polls for content changes (height or count)
+ * Returns immediately when change is detected or timeout is reached.
+ */
+async function waitForContentChange(lastHeight, lastCount, maxWait = 2500) {
+    const start = Date.now();
+    const pollInterval = 100;
+
+    while (Date.now() - start < maxWait) {
+        if (!state.isRunning) return false;
+
+        const currentHeight = getScrollHeight();
+        const currentCount = findWithdrawButtons().length;
+
+        if (currentHeight > lastHeight + 50 || currentCount > lastCount) {
+            return true; // Content loaded!
+        }
+
+        await wait(pollInterval);
+    }
+    return false; // Timed out
+}
+
 // Check for "Hi [Name]," or "Hello [Name]," greeting
 function normalizeMessage(text) {
     if (!text) return '';
@@ -1299,11 +1330,14 @@ async function scanConnections() {
             noChangeCount = 0;
         }
 
-        // Scroll to bottom using helper
-        const scrollHeight = getScrollHeight();
-        scrollTo(scrollHeight);
+        const lastHeight = getScrollHeight();
+        const lastCount = findWithdrawButtons().length;
 
-        await wait(800); // Reduced from 1500 for faster scanning
+        // Scroll to bottom using helper
+        scrollTo(lastHeight);
+
+        // REACTIVE WAIT: No more "blind" 1500ms or 800ms delays
+        await waitForContentChange(lastHeight, lastCount, 2500);
 
         // Check for growth
         const currentHeight = getScrollHeight();
