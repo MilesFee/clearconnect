@@ -114,7 +114,7 @@ async function safeSaveState(updates = {}, syncTheme = false) {
 
         return state;
     } catch (e) {
-        console.error('ClearConnect: Safe save failed', e);
+        Logger.error('ClearConnect: Safe save failed', e);
         isAutoSaving.current = false;
         throw e;
     }
@@ -1105,7 +1105,7 @@ function normalizeTimeSettings(valueEl, unitEl) {
 
 async function autoSaveSettings() {
     isAutoSaving.current = true;
-    console.log('Auto-saving settings...');
+    Logger.log('Auto-saving settings...');
 
     const safeModeEl = document.getElementById('safe-mode-toggle');
     const safeThresholdEl = document.getElementById('safe-threshold');
@@ -1181,7 +1181,7 @@ async function autoSaveSettings() {
     if (hasChanges) {
         await safeSaveState(updates);
     }
-    console.log('Settings auto-saved:', localSettings);
+    Logger.log('Settings auto-saved:', localSettings);
 }
 
 function getStatsHTML(state, livePendingCount = null) {
@@ -1442,7 +1442,7 @@ function getModeDescription(mode, settings) {
 function setupEventDelegation() {
     const appRoot = document.getElementById('app-root');
     if (!appRoot) {
-        console.error('CRITICAL: app-root not found in DOM');
+        Logger.error('CRITICAL: app-root not found in DOM');
         return;
     }
 
@@ -1464,7 +1464,7 @@ function setupEventDelegation() {
         // Data-action based routing
         // Event Delegation: Global Link Handler
         if (e.target.id === 'view-results-link') {
-            console.log('Navigating to results via link');
+            Logger.log('Navigating to results via link');
             navigateTo('completed');
             return;
         }
@@ -1488,7 +1488,7 @@ function setupEventDelegation() {
         ].join(', ');
 
         if (e.target.matches(autoSaveSelectors)) {
-            console.log('Setting changed:', e.target.id);
+            Logger.log('Setting changed:', e.target.id);
             autoSaveSettings();
         }
     });
@@ -1630,7 +1630,7 @@ async function handleAction(action, target) {
                 chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
                 window.close();
             } catch (e) {
-                console.log('Content script not ready:', e);
+                Logger.log('Content script not ready:', e);
             }
             break;
 
@@ -1711,7 +1711,7 @@ async function saveSettings() {
         }
     });
 
-    console.log('Settings saved:', { safeMode, safeThreshold, safeUnit, debugMode });
+    Logger.log('Settings saved:', { safeMode, safeThreshold, safeUnit, debugMode });
 
     navigateTo('home');
 }
@@ -1753,7 +1753,7 @@ async function startOperation(options = {}) {
         chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
         window.close();
     } catch (e) {
-        console.log('Content script not ready:', e);
+        Logger.log('Content script not ready:', e);
         showFooterError('Page not ready. Please refresh the LinkedIn page and try again.');
     }
 }
@@ -1776,7 +1776,7 @@ async function startScan() {
         chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
         window.close();
     } catch (e) {
-        console.log('Content script not ready:', e);
+        Logger.log('Content script not ready:', e);
         showFooterError('Page not ready. Please refresh the LinkedIn page and try again.');
     }
 }
@@ -1791,7 +1791,7 @@ async function togglePause() {
             action: isPaused ? 'RESUME_WITHDRAW' : 'PAUSE_WITHDRAW'
         });
     } catch (e) {
-        console.log('Content script not ready:', e);
+        Logger.log('Content script not ready:', e);
     }
 }
 
@@ -1800,7 +1800,7 @@ async function stopOperation() {
     try {
         await chrome.tabs.sendMessage(activeTabId, { action: 'STOP_WITHDRAW' });
     } catch (e) {
-        console.log('Content script not ready:', e);
+        Logger.log('Content script not ready:', e);
     }
 }
 
@@ -1883,7 +1883,7 @@ async function checkPage() {
         // Correct page
         pageStatus = 'ok';
     } catch (e) {
-        console.error('Page check failed:', e);
+        Logger.error('Page check failed:', e);
         pageStatus = 'connectionError';
     }
 }
@@ -1954,7 +1954,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
     } catch (e) {
-        console.error('ClearConnect: Failed to load state', e);
+        Logger.error('ClearConnect: Failed to load state', e);
         renderUI(DEFAULT_STATE);
     }
 });
@@ -1978,7 +1978,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
         if (changes.extension_state) {
             // Ignore updates if we are the ones who caused them via auto-save
             if (isAutoSaving && isAutoSaving.current) {
-                console.log('Skipping render due to local auto-save');
+                Logger.log('Skipping render due to local auto-save');
                 return;
             }
             renderUI(changes.extension_state.newValue);

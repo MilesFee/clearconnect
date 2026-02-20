@@ -17,16 +17,26 @@ jobs:
     - name: Create extension zip
       run: |
         mkdir dist
-        # Copy essential files to a temp directory
-        mkdir temp_extension
-        cp -r manifest.json *.js *.html *.css icons temp_extension/
+        # Create a clean directory for the extension files
+        mkdir clearconnect-extension
         
-        # Zip the contents of the temp directory
-        cd temp_extension
-        zip -r ../dist/clearconnect-extension.zip .
-        cd ..
+        # Copy core extension files
+        cp manifest.json clearconnect-extension/
+        cp background.js content.js popup.js sidepanel.js utils.js clearconnect-extension/
+        cp popup.html sidepanel.html clearconnect-extension/
+        cp popup.css clearconnect-extension/
+        
+        # Copy assets
+        cp -r icons clearconnect-extension/
+        
+        # Copy documentation
+        cp LICENSE README.md CONTRIBUTING.md clearconnect-extension/
+        
+        # Zip the directory
+        # Usage of ${GITHUB_REF_NAME} allows using the tag name (e.g., v2.5.0) in the zip file
+        zip -r dist/clearconnect-${{ github.ref_name }}.zip clearconnect-extension
         
     - name: Upload Release Asset
       uses: softprops/action-gh-release@v1
       with:
-        files: dist/clearconnect-extension.zip
+        files: dist/clearconnect-${{ github.ref_name }}.zip

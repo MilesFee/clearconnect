@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# System Files
+.DS_Store
+Thumbs.db
+
+# IDES / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI / Agent Artifacts
+.agent/
+.gemini/
+brain/
+*.log
+
+# Build / Temp
+dist/
+build/
+coverage/
+
+# OS
+*.crx
+*.pem
