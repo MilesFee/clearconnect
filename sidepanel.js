@@ -92,7 +92,7 @@ async function safeSaveState(updates = {}) {
 
         return state;
     } catch (e) {
-        console.error('ClearConnect Side Panel: Safe save failed', e);
+        Logger.error('ClearConnect Side Panel: Safe save failed', e);
         isAutoSaving.current = false;
         throw e;
     }
@@ -358,11 +358,11 @@ function renderScanResults(results) {
     if (!results || results.length === 0) {
         if (empty) empty.style.display = 'block';
         if (withdrawBtn) withdrawBtn.disabled = true;
-        console.log('ClearConnect: renderScanResults called with empty results', results);
+        Logger.log('ClearConnect: renderScanResults called with empty results', results);
         return;
     }
     if (empty) empty.style.display = 'none';
-    console.log('ClearConnect: renderScanResults rendering', results.length, 'items');
+    Logger.log('ClearConnect: renderScanResults rendering', results.length, 'items');
 
     results.forEach((item, idx) => {
         try {
@@ -450,7 +450,7 @@ function renderScanResults(results) {
 
             list.appendChild(div);
         } catch (err) {
-            console.warn('ClearConnect: Failed to render scan result item', idx, item, err);
+            Logger.warn('ClearConnect: Failed to render scan result item', idx, item, err);
         }
     });
 
@@ -942,7 +942,7 @@ function setupEventDelegation() {
                         selectedScanHashes.clear();
                     });
                 } catch (e) {
-                    console.log('Content script not ready:', e);
+                    Logger.log('Content script not ready:', e);
                 }
                 break;
 
@@ -1013,7 +1013,7 @@ function setupEventDelegation() {
                             safeUnit: finalSettings.safeUnit || 'month',
                             debugMode: finalSettings.debugMode === true
                         }).catch(err => {
-                            console.error('Failed to start continue clearing:', err);
+                            Logger.error('Failed to start continue clearing:', err);
                         });
                     }
                 });

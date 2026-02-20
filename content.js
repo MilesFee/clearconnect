@@ -69,7 +69,7 @@ async function saveState() {
 
         await chrome.storage.local.set({ extension_state: mergedState });
     } catch (e) {
-        console.error('ClearConnect: Failed to save state', e);
+        Logger.error('ClearConnect: Failed to save state', e);
     }
 }
 
@@ -138,7 +138,7 @@ function broadcastState(eventType = 'STATE_UPDATE') {
 
         await saveState();
     } catch (e) {
-        console.error('ClearConnect: Failed to restore state', e);
+        Logger.error('ClearConnect: Failed to restore state', e);
     }
 })();
 
@@ -380,7 +380,7 @@ async function clickLoadMoreButton() {
     });
 
     if (loadMore) {
-        console.log('ClearConnect: Found Load More button, clicking...');
+        Logger.log('ClearConnect: Found Load More button, clicking...');
         loadMore.scrollIntoView({ behavior: 'auto', block: 'center' });
         await wait(50); // Minimal delay for scroll to settle
         loadMore.click();
@@ -411,13 +411,13 @@ function isAtScrollBottom() {
 
 async function startProcess(isContinuation = false) {
     scrollContainer = findScrollContainer();
-    console.log('ClearConnect: Scroll container', scrollContainer ? 'found' : 'using window');
+    Logger.log('ClearConnect: Scroll container', scrollContainer ? 'found' : 'using window');
 
     if (!isContinuation) {
         updateStatus('Scrolling to bottom...', 0);
         await scrollToBottom();
     } else {
-        console.log('ClearConnect: Continuation - Skipping scroll');
+        Logger.log('ClearConnect: Continuation - Skipping scroll');
     }
 
     // Reset scan state
@@ -565,7 +565,7 @@ async function scrollToBottom() {
     let lastCardElement = null;
 
     const linkedInTotal = getLinkedInTotalCount() || 1000; // fallback estimate
-    console.log('ClearConnect: LinkedIn shows', linkedInTotal, 'total');
+    Logger.log('ClearConnect: LinkedIn shows', linkedInTotal, 'total');
 
     // Send initial scroll progress
     sendScrollProgress(0, linkedInTotal);
@@ -695,7 +695,7 @@ async function scrollToBottom() {
 
             // CHECK FOR LOAD MORE PROACTIVELY IF STUCK OR NEAR BOTTOM
             if (noChange >= 2 || isAtScrollBottom()) {
-                console.log('ClearConnect: Checking for Load More button...');
+                Logger.log('ClearConnect: Checking for Load More button...');
                 const clicked = await clickLoadMoreButton();
                 if (clicked) {
                     noChange = 0;
@@ -712,7 +712,7 @@ async function scrollToBottom() {
                 // RE-FIND CONTAINER: Layout might have shifted
                 const newContainer = findScrollContainer();
                 if (newContainer && newContainer !== scrollContainer) {
-                    console.log('ClearConnect: Scroll container shifted, updating...');
+                    Logger.log('ClearConnect: Scroll container shifted, updating...');
                     scrollContainer = newContainer;
                 }
 
@@ -740,31 +740,31 @@ async function scrollToBottom() {
         // Conditions to break loop:
         // 1. We reached or exceeded the official total
         if (currentCount >= linkedInTotal) {
-            console.log('ClearConnect: Reached LinkedIn total count, proceeding');
+            Logger.log('ClearConnect: Reached LinkedIn total count, proceeding');
             break;
         }
 
         // 2. We are VERY near the official total AND haven't seen changes for 1 poll (fast exit)
         if (currentCount >= (linkedInTotal - 15) && noChange >= 1) {
-            console.log('ClearConnect: Very near LinkedIn total count, proceeding early');
+            Logger.log('ClearConnect: Very near LinkedIn total count, proceeding early');
             break;
         }
 
         // 3. We are near the official total AND haven't seen changes for 2 polls (standard exit)
         if (currentCount >= (linkedInTotal - tolerance) && noChange >= 2) {
-            console.log('ClearConnect: Near LinkedIn total count, proceeding');
+            Logger.log('ClearConnect: Near LinkedIn total count, proceeding');
             break;
         }
 
         // 2. We are literally at scroll bottom, card unchanged, and we've waited enough (slow exit)
         if (atBottom && sameLastCard && noChange >= 5) {
-            console.log('ClearConnect: At physical scroll bottom with no updates, proceeding');
+            Logger.log('ClearConnect: At physical scroll bottom with no updates, proceeding');
             break;
         }
 
         // 3. Absolute timeout / stuck safety (very slow exit)
         if (noChange >= 8) {
-            console.log('ClearConnect: Stuck for too long, proceeding with what we have');
+            Logger.log('ClearConnect: Stuck for too long, proceeding with what we have');
             break;
         }
 
@@ -886,7 +886,7 @@ function getAge(button) {
     }
 
     // Debug info handling for "Unknown"
-    // console.log('Unknown age text:', text.substring(0, 50));
+    // Logger.log('Unknown age text:', text.substring(0, 50));
 
     return null;
 }
@@ -1292,7 +1292,7 @@ async function recordWithdrawal(name, profileUrl, age, project = null) {
 
         await chrome.storage.local.set({ withdrawalHistory: history });
     } catch (e) {
-        console.error('ClearConnect: Failed to record withdrawal', e);
+        Logger.error('ClearConnect: Failed to record withdrawal', e);
     }
 }
 
@@ -1419,7 +1419,7 @@ async function scanConnections() {
     const maxScrolls = 200; // Safety limit
 
     scrollContainer = findScrollContainer();
-    console.log('ClearConnect: Scanning using container', scrollContainer);
+    Logger.log('ClearConnect: Scanning using container', scrollContainer);
 
     for (let i = 0; i < maxScrolls; i++) {
         if (!state.isRunning) break;
@@ -1497,10 +1497,10 @@ async function scanConnections() {
             }
 
             if (fuzzyStop) {
-                console.log('ClearConnect: Reached total count (fuzzy), stopping.');
+                Logger.log('ClearConnect: Reached total count (fuzzy), stopping.');
                 break;
             } else if (noChangeCount >= 2) {
-                console.log('ClearConnect: Scanning stuck, checking for Load More button...');
+                Logger.log('ClearConnect: Scanning stuck, checking for Load More button...');
                 const clicked = await clickLoadMoreButton();
                 if (clicked) {
                     noChangeCount = 0;
@@ -1520,7 +1520,7 @@ async function scanConnections() {
                         await wait(800);
                         scrollTo(getScrollHeight());
                     } else {
-                        console.log('ClearConnect: Stuck with no growth, stopping.');
+                        Logger.log('ClearConnect: Stuck with no growth, stopping.');
                         break;
                     }
                 }
@@ -1806,7 +1806,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
         // Sync settings
         if (newState.settings) {
             state.settings = { ...state.settings, ...newState.settings };
-            console.log('ClearConnect: Synced settings from storage');
+            Logger.log('ClearConnect: Synced settings from storage');
         }
 
         // Sync stats (if we aren't the ones currently running/updating them)
