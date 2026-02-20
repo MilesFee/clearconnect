@@ -15,10 +15,28 @@ const DEFAULTS = {
 };
 
 const DEFAULT_STATE = {
-    isRunning: false, isPaused: false, currentMode: 'count', subMode: 'idle',
-    stats: { processed: 0, total: 0, oldestCleared: '-', startTime: null },
-    settings: { ...DEFAULTS }, status: { text: 'Ready', progress: 0 },
-    sessionLog: [], uiNavigation: { currentTab: 'home' }, lastRunResult: null
+    isRunning: false,
+    isPaused: false,
+    currentMode: 'count',
+    subMode: 'idle',
+    lastError: null,
+    stats: {
+        processed: 0,
+        total: 0,
+        oldestCleared: '-',
+        startTime: null,
+        pendingInvitations: null,
+        pendingUpdatedAt: null,
+        alltimeCleared: 0
+    },
+    settings: { ...DEFAULTS },
+    status: { text: 'Ready', progress: 0 },
+    sessionLog: [],
+    foundMatchingPeople: [],
+    batchStart: 0,
+    uiNavigation: { currentTab: 'home' },
+    lastRunResult: null,
+    sessionCleared: []
 };
 
 let activeTabId = null;
@@ -26,26 +44,82 @@ let localSettings = { ...DEFAULTS };
 let selectedScanHashes = new Set();
 let foundScanResults = [];
 
+// NEW: Global Render Lock to prevent storage listener loops
+let isAutoSaving = { current: false };
+
+/**
+ * Robustly saves state to storage by merging with current storage and defaults
+ * @param {Object} updates - Recursive updates to apply to the state
+ */
+async function safeSaveState(updates = {}) {
+    try {
+        // Suppress storage listener re-renders
+        isAutoSaving.current = true;
+
+        // 1. Fetch latest state
+        const data = await chrome.storage.local.get('extension_state');
+        let state = data.extension_state || { ...DEFAULT_STATE };
+
+        // 2. Deep Merge Stats/Settings to ensure no property loss
+        const mergeDeep = (target, source) => {
+            for (const key in source) {
+                if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+                    if (!target[key]) target[key] = {};
+                    mergeDeep(target[key], source[key]);
+                } else {
+                    target[key] = source[key];
+                }
+            }
+        };
+
+        // Apply fallback defaults for missing root keys
+        for (const key in DEFAULT_STATE) {
+            if (state[key] === undefined) {
+                state[key] = JSON.parse(JSON.stringify(DEFAULT_STATE[key]));
+            }
+        }
+
+        // Apply provided updates
+        mergeDeep(state, updates);
+
+        // 3. Persist
+        await chrome.storage.local.set({ extension_state: state });
+
+        // 4. Release lock after a delay
+        setTimeout(() => {
+            isAutoSaving.current = false;
+        }, 200);
+
+        return state;
+    } catch (e) {
+        console.error('ClearConnect Side Panel: Safe save failed', e);
+        isAutoSaving.current = false;
+        throw e;
+    }
+}
+
 // ============ TOPIC EXTRACTION ============
 function extractTopicFromMessage(msg) {
     if (!msg) return null;
 
     // Remove greetings for topic extraction pass
     // Hyphens (-) are allowed in names (e.g. Ching-Wen)
-    const cleanMsg = msg.replace(/^(?:Hi|Hello|Hey|Dear|Good morning|Good afternoon|Good evening|Reaching out about)\s+[\w\s\-]{1,40}?[,:\!\-\u2013\u2014]\s*/i, '').trim();
+    const cleanMsg = msg.replace(/^(?:Hi|Hello|Hey|Dear|Good morning|Good afternoon|Good evening|Reaching out about)\s+[^,:\!\-\u2013\u2014]{1,40}?[,:\!\-\u2013\u2014]\s*/i, '').trim();
 
 
     const patterns = [
         // Marker-based extraction (The user's failure cases)
         // High priority: survey/phone call on [Topic] -> captures topic before later markers like "working with"
-        /(?:survey call on|phone call on|consulting opportunity (?:offering|for)|paid consultation call on|paid 1-hour consulting call on)\s+([A-Z][^.!?\"'\n]{3,80})/i,
+        /(?:survey call on|phone call on|consulting call on|consulting opportunity (?:offering|for)|paid consultation call on|paid hour-long (?:consulting|survey) call on)\s+([A-Z][^.!?\"'\n]{3,80})/i,
+
+        /(?:on behalf of a client about a|reaching out about a|reaching out about an)\s+(?:paid hour-long consulting call on|hour-long survey call on)\s+([A-Z][^.!?\"'\n]{3,80})/i,
 
         /(?:familiar with|experts in|speak to|use of|experts (?:that|who) can speak to)\s+(?:the\s+)?([A-Z][^.!?\"'\n]{3,80})/i,
 
         // Context markers (Interest/About) - moved up to avoid "working with a consulting client" false positives
         /(?:interested in|about|regarding|re:)\s+["']?([A-Z][^.!?\"'\n]{5,80})/i,
 
-        /(?:evaluating and working with|experience evaluating and working with|experience working with and evaluating|working with)\s+([A-Z][^.!?\"'\n]{3,80})/i,
+        /(?:evaluating and working with|experience evaluating and working with|experience working with and evaluating|working with|your experience with|your experience with evaluating and working with)\s+([A-Z][^.!?\"'\n]{3,80})/i,
 
         /(?:survey call on|phone call on|consulting opportunity (?:offering|for)).*?(?:working with|speak to|evaluating and working with)\s+([A-Z][^.!?\"'\n]{3,80})/i,
 
@@ -66,7 +140,7 @@ function extractTopicFromMessage(msg) {
             let oldTopic;
             do {
                 oldTopic = topic;
-                topic = topic.replace(/^(?:the|using|a|an|use of|the use of|learning more about|understanding the|understanding|learning|solutions for|solutions regarding|solutions|platforms like|providers like|working with|experts that can speak to|your experience evaluating and working with|your experience with evaluating and working with)\s+/i, '').trim();
+                topic = topic.replace(/^(?:the|using|a|an|use of|the use of|learning more about|understanding the|understanding|learning|solutions for|solutions regarding|solutions|platforms like|providers like|working with|experts that can speak to|your experience evaluating and working with|your experience with evaluating and working with|your experience with|your experience in the)\s+/i, '').trim();
             } while (topic !== oldTopic);
 
 
@@ -829,13 +903,8 @@ function setupEventDelegation() {
                 break;
 
             case 'resume-scan-results':
-                // Set state to scanResults and re-render
-                chrome.storage.local.get('extension_state').then(({ extension_state }) => {
-                    const state = extension_state || DEFAULT_STATE;
-                    state.uiNavigation = { currentTab: 'scanResults' };
-                    console.log('ClearConnect Side Panel: Saving state (resume-scan-results):', state);
-                    chrome.storage.local.set({ extension_state: state }).then(() => renderUI(state));
-                });
+                // Set state to scanResults and re-render safely
+                await safeSaveState({ uiNavigation: { currentTab: 'scanResults' } });
                 break;
 
             case 'open-popup':
@@ -878,26 +947,15 @@ function setupEventDelegation() {
                 break;
 
             case 'cancel-scan':
-                // Navigate back to home (popup will show home)
-                chrome.storage.local.get('extension_state').then(async ({ extension_state }) => {
-                    if (extension_state) {
-                        extension_state.uiNavigation = { currentTab: 'home' };
-                        await chrome.storage.local.set({ extension_state });
-                    }
-                    window.close();
-                });
+                // Navigate back to home safely
+                await safeSaveState({ uiNavigation: { currentTab: 'home' } });
+                window.close();
                 break;
 
             case 'done':
-                // Reset navigation to home and close the side panel
-                chrome.storage.local.get('extension_state').then(async ({ extension_state }) => {
-                    if (extension_state) {
-                        extension_state.uiNavigation = { currentTab: 'home' };
-                        // Preserve lastRunResult so stats page can show it
-                        await chrome.storage.local.set({ extension_state });
-                    }
-                    window.close();
-                });
+                // Reset navigation to home safely
+                await safeSaveState({ uiNavigation: { currentTab: 'home' } });
+                window.close();
                 break;
 
             case 'toggle-session':
@@ -968,8 +1026,10 @@ function setupEventDelegation() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'COMPLETE') {
         if (message.state) {
-            chrome.storage.local.set({ extension_state: message.state });
-            renderUI(message.state);
+            // Robustly merge complete run result
+            safeSaveState(message.state).then(fullState => {
+                renderUI(fullState);
+            });
         }
     }
 
@@ -978,12 +1038,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         selectedScanHashes.clear();
         chrome.storage.local.set({ savedScanResults: foundScanResults });
 
-        // Navigate to scan results passively
-        chrome.storage.local.get('extension_state').then(({ extension_state }) => {
-            const state = extension_state || DEFAULT_STATE;
-            // ONLY modify the navigation property
-            state.uiNavigation = { currentTab: 'scanResults' };
-            chrome.storage.local.set({ extension_state: state }).then(() => renderUI(state));
+        // Navigate to scan results safely
+        safeSaveState({ uiNavigation: { currentTab: 'scanResults' } }).then(state => {
+            renderUI(state);
         });
     }
 
