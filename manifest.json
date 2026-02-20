@@ -37,6 +37,7 @@
         "https://www.linkedin.com/mynetwork/invitation-manager/sent/*"
       ],
       "js": [
+        "utils.js",
         "content.js"
       ]
     }

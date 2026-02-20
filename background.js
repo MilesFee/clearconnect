@@ -1,4 +1,5 @@
 // ClearConnect Background Service Worker
+importScripts('utils.js');
 // Manages side panel lifecycle, panel behavior, and message relay
 
 // Open side panel when requested by popup
@@ -9,7 +10,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             // Per spec: set panel behavior so clicking icon opens side panel during active ops
             chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => { });
             chrome.sidePanel.open({ tabId }).catch(e => {
-                console.log('ClearConnect: Could not open side panel:', e);
+                Logger.log('ClearConnect: Could not open side panel:', e);
             });
         }
         sendResponse({ ok: true });
@@ -22,7 +23,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             // Open immediately to preserve user gesture
             chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => { });
             chrome.sidePanel.open({ tabId }).catch(e => {
-                console.log('ClearConnect: Could not open side panel:', e);
+                Logger.log('ClearConnect: Could not open side panel:', e);
             });
 
             // Then update state
