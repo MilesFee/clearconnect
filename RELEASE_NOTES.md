@@ -1,5 +1,15 @@
 # ClearConnect Release Notes
 
+## Version 2.5.0 - Production Release Candidate 🚀
+
+This release focuses on professionalizing the codebase and preparing for public release on the Chrome Web Store and GitHub.
+
+### 🌟 Key Changes
+*   **Production Hardening:** Removed debug logging and optimized performance.
+*   **Documentation Overhaul:** New `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and enhanced `README.md`.
+*   **Codebase Audit:** Cleaned up TODOs and standardized code style.
+*   **Repository Cleanup:** Improved `.gitignore` and removed temporary artifacts.
+
 ## Version 2.3.0 - The MVP Release 🚀
 
 This release consolidates all recent UI improvements, safety features, and the new Single Page Application (SPA) architecture into a stable MVP.
