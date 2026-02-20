@@ -19,9 +19,7 @@ ClearConnect is a powerful Chrome extension that helps you manage your "Sent" in
 
 ## 📸 Screenshots
 
-*(Add screenshots of the Popup and Side Panel here)*
-
-## 📦 Installation
+*(coming never maybe)*
 
 ## 📦 Installation
 
@@ -32,7 +30,8 @@ ClearConnect is a powerful Chrome extension that helps you manage your "Sent" in
 4.  Open Chrome and navigate to `chrome://extensions/`.
 5.  Enable **Developer Mode** (toggle in the top right corner).
 6.  Click **Load unpacked**.
-7.  Select the folder where you unzipped the extension (it should contain `manifest.json`).
+7.  Select the folder where you unzipped the extension (it should be titled `clearconnect-extension`).
+8.  The extension should now be installed and ready to use.
 
 ### For Developers (Source Code)
 1.  **Clone** the repository: `git clone https://github.com/your-username/clearconnect.git`
