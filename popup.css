@@ -614,8 +614,9 @@ body {
 
 .slide-toggle {
     display: flex;
-    background: var(--bg-neutral);
+    background: var(--bg-surface);
     padding: 4px;
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
     position: relative;
     isolation: isolate;
@@ -691,6 +692,12 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+/* Specific Hover for Moon Icon in Light Mode - Darken only it unless active */
+:not([data-theme="dark"]) .slide-btn[data-theme="dark"]:not(.active):hover {
+    color: #171717;
+    /* Very nearly black */
 }
 
 .slide-btn:hover {

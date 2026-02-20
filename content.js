@@ -46,9 +46,28 @@ let scrollContainer = null;
 // foundMatchingPeople moved to state.foundMatchingPeople
 
 // Save state to chrome.storage.local (source of truth)
+// CRITICAL: We fetch and merge to avoid wiping external updates (like settings changes)
 async function saveState() {
     try {
-        await chrome.storage.local.set({ extension_state: state });
+        const data = await chrome.storage.local.get('extension_state');
+        const currentState = data.extension_state || {};
+
+        // Merge our runtime state into storage state
+        // We "own" isRunning, subMode, stats.processed, stats.alltimeCleared while running
+        const mergedState = {
+            ...currentState,
+            ...state,
+            stats: {
+                ...(currentState.stats || {}),
+                ...state.stats
+            },
+            settings: {
+                ...(currentState.settings || {}),
+                ...state.settings
+            }
+        };
+
+        await chrome.storage.local.set({ extension_state: mergedState });
     } catch (e) {
         console.error('ClearConnect: Failed to save state', e);
     }
@@ -70,11 +89,35 @@ function broadcastState(eventType = 'STATE_UPDATE') {
     try {
         const { extension_state, alltimeCleared: legacyCleared } = await chrome.storage.local.get(['extension_state', 'alltimeCleared']);
         if (extension_state) {
-            // Merge stored state into current state
-            Object.assign(state, extension_state);
+            // DEEP MERGE: Merge stored state into current state
+            // Object.assign is shallow, so we manually merge deep objects
+
+            // 1. Merge Top Level Booleans/Strings
+            for (const key in extension_state) {
+                if (typeof extension_state[key] !== 'object' || extension_state[key] === null) {
+                    state[key] = extension_state[key];
+                }
+            }
+
+            // 2. Merge Stats
+            if (extension_state.stats) {
+                state.stats = { ...state.stats, ...extension_state.stats };
+            }
+
+            // 3. Merge Settings
+            if (extension_state.settings) {
+                state.settings = { ...state.settings, ...extension_state.settings };
+            }
+
+            // 4. Merge Navigation/Result objects
+            if (extension_state.uiNavigation) state.uiNavigation = { ...state.uiNavigation, ...extension_state.uiNavigation };
+            if (extension_state.lastRunResult) state.lastRunResult = { ...state.lastRunResult, ...extension_state.lastRunResult };
+            if (extension_state.sessionLog) state.sessionLog = extension_state.sessionLog;
+            if (extension_state.sessionCleared) state.sessionCleared = extension_state.sessionCleared;
+            if (extension_state.foundMatchingPeople) state.foundMatchingPeople = extension_state.foundMatchingPeople;
 
             // Migrate legacy alltimeCleared if it exists and state doesn't have it
-            if (legacyCleared && !state.stats.alltimeCleared) {
+            if (legacyCleared && (state.stats.alltimeCleared === 0 || state.stats.alltimeCleared === undefined)) {
                 state.stats.alltimeCleared = legacyCleared;
             }
 
@@ -942,11 +985,6 @@ async function processNext() {
         return;
     }
 
-    if (!isSafe(btn)) {
-        complete(`Safety stop: ${personName} (${ageText}) is too recent.`, {}, 'safety');
-        return;
-    }
-
     // Wait if paused
     while (state.isPaused && state.isRunning) {
         await wait(500);
@@ -960,6 +998,11 @@ async function processNext() {
         } else {
             complete(`Age limit reached at ${personName} (${ageText}).`, { oldestRemaining: age }, 'success');
         }
+        return;
+    }
+
+    if (!isSafe(btn)) {
+        complete(`Safety stop: ${personName} (${ageText}) is too recent.`, {}, 'safety');
         return;
     }
 
@@ -1292,13 +1335,14 @@ function normalizeMessage(text) {
     let normalized = text.toLowerCase().trim()
         .replace(/\s+/g, ' '); // Collapse tabs, newlines, multiple spaces
 
-    // 2. Remove common greetings and recipient names
+    // 2. Normalize greetings and recipient names
     // Matches "hi [name],", "hello [name]!", etc. handles names up to 40 chars
     // Includes "reaching out about" as it often precedes the name or recipient context
     // Hyphens (-) are allowed in names (e.g. Ching-Wen)
-    const greetingMatch = normalized.match(/^(?:hi|hello|hey|dear|good morning|good afternoon|good evening|reaching out about|use of)\s+[\w\s\-]{1,40}?[,:\!\-\u2013\u2014]\s*/i);
+    const greetingMatch = normalized.match(/^((?:hi|hello|hey|dear|good morning|good afternoon|good evening|reaching out about|use of)\s+)([^,:\!\-\u2013\u2014]{1,40}?)([,:\!\-\u2013\u2014]\s*)/i);
     if (greetingMatch) {
-        normalized = normalized.substring(greetingMatch[0].length).trim();
+        // greetingMatch[1] is "hi ", [2] is name, [3] is suffix like ","
+        normalized = greetingMatch[1] + '[firstname]' + greetingMatch[3] + normalized.substring(greetingMatch[0].length).trim();
     }
 
     // 3. Mask variable data to prevent group splitting
@@ -1753,3 +1797,26 @@ async function withdrawSelected(selectedHashes) {
 
     complete(`Done! Cleared ${state.stats.processed} selected connections.`);
 }
+// Listen for external storage changes (e.g. settings updated in popup)
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.extension_state) {
+        const newState = changes.extension_state.newValue;
+        if (!newState) return;
+
+        // Sync settings
+        if (newState.settings) {
+            state.settings = { ...state.settings, ...newState.settings };
+            console.log('ClearConnect: Synced settings from storage');
+        }
+
+        // Sync stats (if we aren't the ones currently running/updating them)
+        if (!state.isRunning && newState.stats) {
+            state.stats = { ...state.stats, ...newState.stats };
+        }
+
+        // Sync navigation (to keep track of where we are if popup moves us)
+        if (newState.uiNavigation) {
+            state.uiNavigation = { ...state.uiNavigation, ...newState.uiNavigation };
+        }
+    }
+});
