@@ -57,6 +57,69 @@ let pageStatus = 'ok'; // 'ok' | 'offPlatform' | 'wrongPage' | 'connectionError'
 let selectedScanHashes = new Set();
 let foundScanResults = [];
 
+// NEW: Global Render Lock to prevent storage listener loops
+let isAutoSaving = { current: false };
+
+/**
+ * Robustly saves state to storage by merging with current storage and defaults
+ * @param {Object} updates - Recursive updates to apply to the state
+ * @param {boolean} syncTheme - Whether to also set the top-level 'theme' key
+ */
+async function safeSaveState(updates = {}, syncTheme = false) {
+    try {
+        isAutoSaving.current = true;
+        const data = await chrome.storage.local.get('extension_state');
+        let state = data.extension_state || { ...DEFAULT_STATE };
+
+        // Ensure settings exist for merging
+        if (!state.settings) state.settings = { ...DEFAULTS };
+
+        // Helper for deep merging
+        function mergeDeep(target, source) {
+            for (const key in source) {
+                if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+                    if (!target[key]) target[key] = {};
+                    mergeDeep(target[key], source[key]);
+                } else {
+                    target[key] = source[key];
+                }
+            }
+        }
+
+        // Apply fallback defaults for missing root keys (original logic)
+        for (const key in DEFAULT_STATE) {
+            if (state[key] === undefined) {
+                state[key] = JSON.parse(JSON.stringify(DEFAULT_STATE[key]));
+            }
+        }
+
+        mergeDeep(state, updates);
+
+        // Sync local settings cache
+        if (state.settings) {
+            localSettings = { ...localSettings, ...state.settings };
+        }
+
+        const savePayload = { extension_state: state };
+        if (syncTheme && state.settings?.theme) {
+            savePayload.theme = state.settings.theme;
+        }
+
+        await chrome.storage.local.set(savePayload);
+
+        // Success - clean up lock after storage event propagates
+        setTimeout(() => {
+            isAutoSaving.current = false;
+        }, 200);
+
+        return state;
+    } catch (e) {
+        console.error('ClearConnect: Safe save failed', e);
+        isAutoSaving.current = false;
+        throw e;
+    }
+}
+
 // ============ FOOTER STATUS HELPER ============
 // Renders semantic status in footer based on stopType
 function getFooterStatusHTML(state) {
@@ -68,7 +131,7 @@ function getFooterStatusHTML(state) {
     if (currentTab === 'completed') return '';
 
     // P3: Post-Run - semantic banner based on stopType
-    if (state?.lastRunResult && !state?.isRunning) {
+    if (state?.lastRunResult && !state?.isRunning && !state.lastRunResult.dismissed) {
         const { processed, oldestCleared, stopType, message } = state.lastRunResult;
         const showViewResults = processed > 0;
 
@@ -518,7 +581,7 @@ async function renderUI(state) {
     };
 
     // 2. Blocking Page Status Check (Transient)
-    if (pageStatus !== 'ok') {
+    if (pageStatus !== 'ok' && !isRunning) {
         hideAll();
         if (errorSection) {
             errorSection.classList.remove('hidden');
@@ -532,6 +595,13 @@ async function renderUI(state) {
                 case 'connectionError':
                     errorSection.innerHTML = getConnectionErrorHTML(state);
                     break;
+                default:
+                    // Fallback to home if pageStatus is weird
+                    if (homeSection) {
+                        errorSection.classList.add('hidden');
+                        homeSection.classList.remove('hidden');
+                        homeSection.innerHTML = getHomeHTML(state);
+                    }
             }
         }
         return;
@@ -580,7 +650,9 @@ async function renderUI(state) {
                         homeSection.innerHTML = getHistoryHTML(state, withdrawalHistory || []);
                     });
                 } else if (currentTab === 'stats') {
-                    // Async Stats
+                    // Async Stats - Immediate render with cached data to prevent blank screen
+                    homeSection.innerHTML = getStatsHTML(state, state.stats?.pendingInvitations);
+
                     chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
                         if (tab?.id) {
                             chrome.tabs.sendMessage(tab.id, { action: 'GET_PENDING_COUNT' })
@@ -588,15 +660,17 @@ async function renderUI(state) {
                                     const count = response?.count;
                                     if (count !== undefined && count !== null) {
                                         // Save to storage silenty (don't trigger full re-render)
-                                        chrome.storage.local.get('extension_state').then(({ extension_state }) => {
-                                            if (extension_state?.stats) {
-                                                extension_state.stats.pendingInvitations = count;
-                                                extension_state.stats.pendingUpdatedAt = Date.now();
-                                                chrome.storage.local.set({ extension_state });
+                                        // Save to storage safely
+                                        safeSaveState({
+                                            stats: {
+                                                pendingInvitations: count,
+                                                pendingUpdatedAt: Date.now()
                                             }
                                         });
+                                        // Update the view with fresh live count
+                                        // Update the view with fresh live count
+                                        homeSection.innerHTML = getStatsHTML(state, count);
                                     }
-                                    homeSection.innerHTML = getStatsHTML(state, count);
                                 })
                                 .catch(async () => {
                                     // Fallback: Content script might not be loaded yet or crashed. Scrape live.
@@ -620,21 +694,20 @@ async function renderUI(state) {
                                         });
                                         const count = results?.[0]?.result;
                                         if (count !== undefined && count !== null) {
-                                            chrome.storage.local.get('extension_state').then(({ extension_state }) => {
-                                                if (extension_state?.stats) {
-                                                    extension_state.stats.pendingInvitations = count;
-                                                    extension_state.stats.pendingUpdatedAt = Date.now();
-                                                    chrome.storage.local.set({ extension_state });
+                                            // Save to storage safely
+                                            safeSaveState({
+                                                stats: {
+                                                    pendingInvitations: count,
+                                                    pendingUpdatedAt: Date.now()
                                                 }
                                             });
+                                            homeSection.innerHTML = getStatsHTML(state, count);
+                                            homeSection.innerHTML = getStatsHTML(state, count);
                                         }
-                                        homeSection.innerHTML = getStatsHTML(state, count);
                                     } catch (e) {
-                                        homeSection.innerHTML = getStatsHTML(state, null);
+                                        // Already rendered with cached data above
                                     }
                                 });
-                        } else {
-                            homeSection.innerHTML = getStatsHTML(state, null);
                         }
                     });
                 } else {
@@ -677,8 +750,18 @@ async function navigateTo(tab, passedState = null) {
         return;
     }
 
+    // UPDATED: Optimistic UI Navigation
+    // 1. Suppress global re-render from storage listener
+    if (typeof isAutoSaving !== 'undefined') isAutoSaving.current = true;
+
+    // 2. Update the state object immediately
     state.uiNavigation = { currentTab: tab };
-    await chrome.storage.local.set({ extension_state: state });
+
+    // 3. Render immediately for instant feedback
+    renderUI(state);
+
+    // 4. Persist Safely
+    await safeSaveState({ uiNavigation: { currentTab: tab } });
 }
 
 // ============ TEMPLATE FUNCTIONS ============
@@ -981,7 +1064,6 @@ function getSettingsHTML(state) {
 }
 
 // Auto-Save Helper
-const isAutoSaving = { current: false };
 
 // --- SHARED TIME NORMALIZATION ---
 function normalizeTimeSettings(valueEl, unitEl) {
@@ -1074,42 +1156,32 @@ async function autoSaveSettings() {
         thresholdGroup.style.display = safeMode ? 'flex' : 'none';
     }
 
-    // 3. Update runtime localSettings
-    localSettings.safeMode = safeMode;
-    localSettings.safeThreshold = safeThreshold;
-    localSettings.safeUnit = safeUnit;
-    localSettings.debugMode = debugMode;
-    localSettings.withdrawCount = withdrawCount;
-    localSettings.ageValue = ageValue;
-    localSettings.ageUnit = ageUnit;
+    // 3. Update runtime localSettings (Cautious Update)
+    const updates = { settings: {} };
+    let hasChanges = false;
 
-    // 4. Save flat keys for Background/Sidepanel
-    await chrome.storage.local.set({
-        safeMode,
-        safeThreshold,
-        safeUnit,
-        debugMode,
-        withdrawCount,
-        ageValue,
-        ageUnit
-    });
-
-    // 5. Persist to extension_state
-    const newState = currentState || { ...DEFAULT_STATE };
-    newState.settings = { ...newState.settings, ...localSettings };
-
-    await chrome.storage.local.set({ extension_state: newState });
-    console.log('Settings auto-saved');
-
-    if (localSettings.theme) {
-        newState.settings.theme = localSettings.theme;
+    if (safeModeEl) { updates.settings.safeMode = safeModeEl.checked; hasChanges = true; }
+    if (debugModeEl) { updates.settings.debugMode = debugModeEl.checked; hasChanges = true; }
+    if (safeNorm) {
+        updates.settings.safeThreshold = safeNorm.val;
+        updates.settings.safeUnit = safeNorm.unit;
+        hasChanges = true;
+    }
+    if (ageNorm) {
+        updates.settings.ageValue = ageNorm.val;
+        updates.settings.ageUnit = ageNorm.unit;
+        hasChanges = true;
+    }
+    if (withdrawCountEl) {
+        updates.settings.withdrawCount = parseInt(withdrawCountEl.value, 10) || 10;
+        hasChanges = true;
     }
 
-    await chrome.storage.local.set({ extension_state: newState });
-    console.log('Settings saved:', newState.settings);
-
-    // Reset flag after a short delay to allow storage event to fire and be ignored
-    setTimeout(() => { isAutoSaving.current = false; }, 100);
+    // 4. Persist safely if changes detected
+    if (hasChanges) {
+        await safeSaveState(updates);
+    }
+    console.log('Settings auto-saved:', localSettings);
 }
 
 function getStatsHTML(state, livePendingCount = null) {
@@ -1131,7 +1203,7 @@ function getStatsHTML(state, livePendingCount = null) {
         dataSource = 'Stored';
     }
 
-    const hasData = currentConnections !== null;
+    const hasData = currentConnections !== null && !isNaN(currentConnections);
     const displayCurrent = hasData ? currentConnections : '---';
     const availableCapacity = hasData ? Math.max(0, maxCapacity - currentConnections) : '---';
     const capacityPercent = hasData ? Math.min(100, Math.round((currentConnections / maxCapacity) * 100)) : 0;
@@ -1144,15 +1216,19 @@ function getStatsHTML(state, livePendingCount = null) {
 
     // Last Run: elapsed time since last operation
     let lastRunText = 'Never';
-    if (lastRunResult?.timestamp) {
-        const elapsed = Date.now() - lastRunResult.timestamp;
-        const mins = Math.floor(elapsed / 60000);
-        const hours = Math.floor(mins / 60);
-        const days = Math.floor(hours / 24);
-        if (days > 0) lastRunText = `${days} day${days > 1 ? 's' : ''} ago`;
-        else if (hours > 0) lastRunText = `${hours} hour${hours > 1 ? 's' : ''} ago`;
-        else if (mins > 1) lastRunText = `${mins} minutes ago`;
-        else lastRunText = 'Just now';
+    try {
+        if (lastRunResult && lastRunResult.timestamp) {
+            const elapsed = Date.now() - lastRunResult.timestamp;
+            const mins = Math.floor(elapsed / 60000);
+            const hours = Math.floor(mins / 60);
+            const days = Math.floor(hours / 24);
+            if (days > 0) lastRunText = `${days} day${days > 1 ? 's' : ''} ago`;
+            else if (hours > 0) lastRunText = `${hours} hour${hours > 1 ? 's' : ''} ago`;
+            else if (mins > 1) lastRunText = `${mins} minutes ago`;
+            else if (mins <= 1) lastRunText = 'Just now';
+        }
+    } catch (e) {
+        lastRunText = 'Unknown';
     }
 
     // Last Cleared: number removed in last session
@@ -1388,22 +1464,8 @@ function setupEventDelegation() {
         // Data-action based routing
         // Event Delegation: Global Link Handler
         if (e.target.id === 'view-results-link') {
-            // Fetch fresh state to avoid scope issues
-            const { extension_state } = await chrome.storage.local.get('extension_state');
-            const state = extension_state || DEFAULT_STATE;
-
-            state.uiNavigation = state.uiNavigation || {};
-            state.uiNavigation.currentTab = 'completed';
-
-            await chrome.storage.local.set({ extension_state: state });
-            // Force Popup to always start on Home
-            if (state.uiNavigation.currentTab !== 'home') {
-                state.uiNavigation.currentTab = 'home';
-                // We don't necessarily need to save this back to storage immediately unless we want to persist the reset,
-                // but for display purposes we just mutate the local state object before rendering.
-            }
-
-            renderUI(state);
+            console.log('Navigating to results via link');
+            navigateTo('completed');
             return;
         }
 
@@ -1485,23 +1547,16 @@ async function handleAction(action, target) {
 
             // 3. Apply theme to document (Instant)
             document.documentElement.setAttribute('data-theme', theme);
-            localSettings.theme = theme;
 
-            // 4. Persist
-            const { extension_state } = await chrome.storage.local.get('extension_state');
-            const newState = extension_state || DEFAULT_STATE;
-            newState.settings = newState.settings || {};
-            newState.settings.theme = theme;
+            // 3. Persist safely with theme sync
+            await safeSaveState({
+                settings: { theme }
+            }, true); // Pass true to sync top-level theme key
 
-            await chrome.storage.local.set({
-                extension_state: newState,
-                theme: theme
-            });
-
-            // 5. Release lock after animation finishes + storage event fires
+            // 4. Release lock after transition
             setTimeout(() => {
                 if (typeof isAutoSaving !== 'undefined') isAutoSaving.current = false;
-            }, 300); // 300ms matches CSS transition
+            }, 300);
             break;
         }
 
@@ -1533,41 +1588,19 @@ async function handleAction(action, target) {
             break;
 
         case 'close-footer': {
-            // 1. Suppress global re-render
-            if (typeof isAutoSaving !== 'undefined') {
-                isAutoSaving.current = true;
-            }
-
-            // 2. Immediate visual update (Manual DOM)
+            // 1. Immediate visual update
             const footer = document.querySelector('.footer');
-            if (footer) {
-                footer.style.display = 'none';
-                // Also hide specific children if needed, but hiding container is usually enough
-                const footerContent = document.getElementById('footer-content');
-                if (footerContent) footerContent.innerHTML = '';
-            }
+            if (footer) footer.style.display = 'none';
 
-            // 3. Update State & Persist
-            const { extension_state } = await chrome.storage.local.get('extension_state');
+            // 2. Safe save or local suppression
+            const data = await chrome.storage.local.get('extension_state');
+            const state = data.extension_state || {};
 
-            if (extension_state?.lastRunResult) {
-                extension_state.lastRunResult = null;
-                // Update local state copy if possible, though storage listener will do it
-                if (typeof state !== 'undefined') state.lastRunResult = null;
-                await chrome.storage.local.set({ extension_state });
+            if (state.lastRunResult) {
+                await safeSaveState({ lastRunResult: { dismissed: true } });
             } else {
-                // Otherwise it's the idle "Ready" message - hide for this session
                 localSettings.hideReadyStatus = true;
-                // Suppress re-render to avoid flicker
-                isAutoSaving.current = true;
-                renderUI(state);
-                setTimeout(() => isAutoSaving.current = false, 100);
             }
-
-            // 4. Release lock
-            setTimeout(() => {
-                if (typeof isAutoSaving !== 'undefined') isAutoSaving.current = false;
-            }, 300);
             break;
         }
 
@@ -1668,16 +1701,17 @@ async function saveSettings() {
         debugMode
     });
 
-    // Also sync into extension_state.settings so getHomeHTML reads correct value immediately
-    const { extension_state } = await chrome.storage.local.get('extension_state');
-    if (extension_state) {
-        extension_state.settings = extension_state.settings || {};
-        extension_state.settings.safeMode = safeMode;
-        extension_state.settings.safeThreshold = safeThreshold;
-        extension_state.settings.safeUnit = safeUnit;
-        extension_state.settings.debugMode = debugMode;
-        await chrome.storage.local.set({ extension_state });
-    }
+    // 5. Sync into extension_state.settings for immediate consistency
+    await safeSaveState({
+        settings: {
+            safeMode,
+            safeThreshold,
+            safeUnit,
+            debugMode
+        }
+    });
+
+    console.log('Settings saved:', { safeMode, safeThreshold, safeUnit, debugMode });
 
     navigateTo('home');
 }
@@ -1864,57 +1898,61 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Load local settings - STRICTLY from extension_state
     // We removed the legacy chrome.storage.local.get(DEFAULTS) call here to prevent conflicts.
 
-    // 1. Check page status (sets transient pageStatus variable)
-    await checkPage();
-
-    // 2. Restore State & Settings
+    // 1. Restore State & Settings (FAST PATH)
     try {
         const { extension_state, alltimeCleared: legacyAlltime, theme: savedTheme } = await chrome.storage.local.get(['extension_state', 'alltimeCleared', 'theme']);
-        const state = extension_state || { ...DEFAULT_STATE };
+        let state = extension_state || { ...DEFAULT_STATE };
+        let needsSave = false;
 
-        // Legacy Migration for alltimeCleared
+        // Legacy Migration for alltimeCleared (Persistent)
         if (legacyAlltime !== undefined && state.stats && state.stats.alltimeCleared === 0) {
             state.stats.alltimeCleared = legacyAlltime;
+            needsSave = true;
         }
 
         // HYDRATE localSettings from persisted state
-        // This is the CRITICAL fix: Ensure localSettings mirrors the loaded state.settings
         if (state.settings) {
             localSettings = { ...DEFAULTS, ...state.settings };
         } else {
-            // If missing in state, init with defaults
             state.settings = { ...DEFAULTS };
             localSettings = { ...DEFAULTS };
+            needsSave = true;
         }
 
-        // RESTORE THEME FROM FLAT KEY (Priority Source of Truth)
+        // RESTORE THEME FROM FLAT KEY
         if (savedTheme) {
             localSettings.theme = savedTheme;
-            if (state.settings) state.settings.theme = savedTheme;
-        }
-
-        // Apply Theme Immediately
-        const theme = localSettings.theme || 'light';
-        document.documentElement.setAttribute('data-theme', theme);
-
-        // Auto-redirect to Side Panel if active operation or scan results
-        // ... (logic continues)
-
-        // Auto-redirect to Side Panel if active operation or scan results
-        if (extension_state) {
-            const isRunning = extension_state.isRunning;
-            const currentTab = extension_state.uiNavigation?.currentTab;
-
-            if (isRunning || currentTab === 'scanResults') {
-                if (activeTabId) {
-                    chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
-                    window.close();
-                    return;
-                }
+            if (state.settings && state.settings.theme !== savedTheme) {
+                state.settings.theme = savedTheme;
+                needsSave = true;
             }
         }
 
-        renderUI(extension_state || DEFAULT_STATE);
+        // Save back if migrated or fixed
+        if (needsSave) {
+            await safeSaveState(state);
+        }
+
+        // Apply Theme Immediately (ONCE)
+        const theme = localSettings.theme || 'light';
+        if (document.documentElement.getAttribute('data-theme') !== theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+        }
+
+        // 2. Force Home Tab on Popup Launch (User Preference)
+        const isRunning = state.isRunning;
+        if (!isRunning && state.uiNavigation && state.uiNavigation.currentTab !== 'home') {
+            await safeSaveState({ uiNavigation: { currentTab: 'home' } });
+        }
+
+        // 3. Render UI immediately with cached data
+        renderUI(state);
+
+        // 4. Perform Page Check asynchronously to avoid blocking UI
+        checkPage().then(() => {
+            renderUI(state); // Re-render once page status is known
+        });
+
     } catch (e) {
         console.error('ClearConnect: Failed to load state', e);
         renderUI(DEFAULT_STATE);
@@ -1952,18 +1990,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
     await checkPage();
     const { extension_state } = await chrome.storage.local.get('extension_state');
-    // 4. Force Home Tab on Open (User Preference)
-    const state = extension_state || DEFAULT_STATE;
-    if (state.uiNavigation && state.uiNavigation.currentTab !== 'home') {
-        state.uiNavigation.currentTab = 'home';
-        // We mutate state locally so renderUI shows home.
-        // We do NOT save to storage to avoid messing up background state if side panel relies on it,
-        // although side panel usually manages its own view or reads from storage. 
-        // If side panel is open, it might read this.
-        // But for popup, we want home. 
-    }
-
-    renderUI(state);
+    renderUI(extension_state || DEFAULT_STATE);
 });
 
 
@@ -2043,16 +2070,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 state.foundMatchingPeople = [...state.foundMatchingPeople, ...newTargets];
             }
 
-            // Save and Render
-            chrome.storage.local.set({ extension_state: state });
-            updatePeopleList(state);
-
-            // Also update stats if total is provided/implied
-            if (state.stats) {
-                // If in count mode, total is fixed. If age/message, it grows.
-                // updateProgress(state) handles text updates but we might need to force a redraw?
-                updateProgress(state);
-            }
+            // Save and Render safely
+            safeSaveState({ foundMatchingPeople: state.foundMatchingPeople }).then(fullState => {
+                updatePeopleList(fullState);
+                // Also update stats if total is provided/implied
+                if (fullState.stats) {
+                    updateProgress(fullState);
+                }
+            });
         });
     }
 });
