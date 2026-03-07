@@ -550,72 +550,73 @@ function getCompletedHTML(state) {
 
     return `
         <div id="completed-view" class="view">
-            ${getSafeNoticeHTML(state)}
-            <!-- Summary Card -->
-            <div class="summary-card" style="background:var(--bg-card); border:1px solid var(--border-default); border-radius:12px; padding:20px; text-align:center; margin-bottom:20px; box-shadow:var(--shadow-sm);">
-                <div class="summary-icon ${statusClass}" style="width:48px; height:48px; border-radius:50%; background:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : statusClass === 'info' ? 'info' : 'danger'}-bg); color:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : statusClass === 'info' ? 'info' : 'danger'}); display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 12px auto;">
-                    ${statusIcon}
+            <div class="scrollable-view-content">
+                ${getSafeNoticeHTML(state)}
+                <!-- Summary Card -->
+                <div class="summary-card" style="background:var(--bg-card); border:1px solid var(--border-default); border-radius:12px; padding:20px; text-align:center; margin-bottom:20px; box-shadow:var(--shadow-sm);">
+                    <div class="summary-icon ${statusClass}" style="width:48px; height:48px; border-radius:50%; background:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : statusClass === 'info' ? 'info' : 'danger'}-bg); color:var(--${statusClass === 'success' ? 'success' : statusClass === 'warning' ? 'warning' : statusClass === 'info' ? 'info' : 'danger'}); display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 12px auto;">
+                        ${statusIcon}
+                    </div>
+                    <h2 style="margin:0 0 8px 0; font-size:18px; color:var(--text-primary);">${statusTitle}</h2>
+                    <p style="margin:0; color:var(--text-secondary); font-size:14px;">${statusMsg}</p>
+                    
+                    ${ageDisplay ? `
+                    <div style="margin-top:12px; font-size:13px; color:var(--text-secondary); background:var(--bg-surface); padding:6px 10px; border-radius:16px; display:inline-block;">
+                        Age Range: <strong>${ageDisplay}</strong>
+                    </div>` : ''}
                 </div>
-                <h2 style="margin:0 0 8px 0; font-size:18px; color:var(--text-primary);">${statusTitle}</h2>
-                <p style="margin:0; color:var(--text-secondary); font-size:14px;">${statusMsg}</p>
-                
-                ${ageDisplay ? `
-                <div style="margin-top:12px; font-size:13px; color:var(--text-secondary); background:var(--bg-surface); padding:6px 10px; border-radius:16px; display:inline-block;">
-                    Age Range: <strong>${ageDisplay}</strong>
+
+                <!-- CLEARED GROUPS (Message Mode Only) -->
+                ${(state.currentMode === 'message' && Object.keys(clearedGroups).length > 0) ? `
+                <div class="cleared-groups-section">
+                    <h3 class="cleared-groups-title">Cleared Groups</h3>
+                    <div class="cleared-groups-list">
+                        ${groupsListHTML}
+                    </div>
                 </div>` : ''}
-            </div>
 
-            <!-- CLEARED GROUPS (Message Mode Only) -->
-            ${(state.currentMode === 'message' && Object.keys(clearedGroups).length > 0) ? `
-            <div class="cleared-groups-section">
-                <h3 class="cleared-groups-title">Cleared Groups</h3>
-                <div class="cleared-groups-list">
-                    ${groupsListHTML}
-                </div>
-            </div>` : ''}
-
-            <!-- Stats Section (Rows + Capacity Bar) -->
-            <div class="stats-section">
-                <div class="stat-row">
-                    <span>Cleared This Session</span>
-                    <strong>${clearedPeople.length}</strong>
-                </div>
-                <div class="stat-row">
-                    <span>Remaining Connections</span>
-                    <strong>${currentConnections}</strong>
-                </div>
-
-                <div class="health-section">
-                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-                        <label>Connection Capacity</label>
-                        <span style="font-size:12px; color:var(--text-secondary);">${capacityUsed} / ~${capacityLimit} used</span>
+                <!-- Stats Section (Rows + Capacity Bar) -->
+                <div class="stats-section">
+                    <div class="stat-row">
+                        <span>Cleared This Session</span>
+                        <strong>${clearedPeople.length}</strong>
                     </div>
-                    <div class="health-bar-bg"><div class="health-bar-fill ${healthColor}" style="width: ${capacityPercent}%"></div></div>
-                    <p style="margin-top:6px; font-size:12px; color:var(--text-secondary);">You have approx. <strong>${capacityLeft}</strong> slots remaining.</p>
-                </div>
-            </div>
-
-            <!-- History List (Collapsible) -->
-            <div class="history-session collapsed">
-                <div class="history-session-header" data-action="toggle-session">
-                    <div class="session-header-left">
-                        <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                        <span class="session-date">View List</span>
+                    <div class="stat-row">
+                        <span>Remaining Connections</span>
+                        <strong>${currentConnections}</strong>
                     </div>
-                    <span class="session-count">${clearedPeople.length} items</span>
+
+                    <div class="health-section">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                            <label>Connection Capacity</label>
+                            <span style="font-size:12px; color:var(--text-secondary);">${capacityUsed} / ~${capacityLimit} used</span>
+                        </div>
+                        <div class="health-bar-bg"><div class="health-bar-fill ${healthColor}" style="width: ${capacityPercent}%"></div></div>
+                        <p style="margin-top:6px; font-size:12px; color:var(--text-secondary);">You have approx. <strong>${capacityLeft}</strong> slots remaining.</p>
+                    </div>
                 </div>
-                <div class="history-session-items">${clearedListItems}</div>
+
+                <!-- History List (Collapsible) -->
+                <div class="history-session collapsed">
+                    <div class="history-session-header" data-action="toggle-session">
+                        <div class="session-header-left">
+                            <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                            <span class="session-date">View List</span>
+                        </div>
+                        <span class="session-count">${clearedPeople.length} items</span>
+                    </div>
+                    <div class="history-session-items">${clearedListItems}</div>
+                </div>
             </div>
 
-            <!-- ACTIONS / BUTTONS -->
-            <!-- ACTIONS / BUTTONS -->
-            <div class="actions" style="margin-top:24px; display:flex; flex-direction:column; gap:12px;">
+            <!-- ACTIONS / BUTTONS (Pinned to bottom) -->
+            <div class="actions actions-fixed" style="display:flex; flex-direction:column; gap:12px;">
                 ${state.currentMode === 'message' ? `
                     <div id="clear-more-container" style="width:100%;">
                         <button data-action="resume-scan-results" class="primary-btn" style="width:100%;">Select More Groups</button>
                     </div>
                 ` : `
-                    <div class="continue-section" id="continue-section" style="width:100%;">
+                    <div class="continue-section" id="continue-section" style="width:100%; border-top:none; padding-top:0; margin-top:0;">
                         <div class="continue-label" style="font-size:13px; font-weight:600; color:var(--text-primary); margin-bottom:12px; text-align:left;">Continue Clearing</div>
                         
                         <div class="setting-option" style="margin-bottom:8px;">
@@ -631,7 +632,7 @@ function getCompletedHTML(state) {
                             </label>
                         </div>
 
-                        <div class="setting-option">
+                        <div class="setting-option" style="margin-bottom:0;">
                             <label class="checkbox-label">
                                 <input type="radio" name="continue-mode" value="age" ${state.currentMode === 'age' ? 'checked' : ''} style="margin-top:3px;">
                                 <div class="option-text">

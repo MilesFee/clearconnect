@@ -200,6 +200,25 @@ body {
     flex-direction: column;
     flex: 1;
     min-height: 0;
+    overflow: hidden;
+    /* Prevent the entire view from scrolling */
+}
+
+/* New: Scrollable content area */
+.scrollable-view-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1px;
+    /* Avoid margin collapse issues */
+    margin-bottom: 12px;
+}
+
+/* New: Fixed actions footer */
+.actions-fixed {
+    flex-shrink: 0;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-default);
+    background: var(--bg-page);
 }
 
 @keyframes fadeIn {
