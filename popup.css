@@ -1006,6 +1006,9 @@ body {
     border: 1px solid var(--success);
     border-radius: var(--radius-md);
     margin-bottom: 12px;
+    box-sizing: border-box;
+    /* Ensure border is inside */
+    width: 100%;
 }
 
 .completion-message.warning {
@@ -1355,6 +1358,26 @@ body {
 }
 
 /* Settings */
+.settings-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-default);
+}
+
+.settings-item:last-of-type {
+    border-bottom: none;
+}
+
+.settings-group {
+    margin-bottom: 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 0 12px;
+}
+
 .setting-group {
     margin-bottom: 8px;
 }
@@ -3149,6 +3172,14 @@ body.results-active .progress-actions {
     font-size: 12px;
     color: var(--text-secondary);
     padding: 8px 0 4px;
+}
+
+.debug-menu {
+    border: 1px dashed var(--warning);
+    background: var(--warning-bg);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    margin-top: 16px;
 }
 
 .scan-full-message {

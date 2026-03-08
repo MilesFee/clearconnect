@@ -985,83 +985,70 @@ function getProgressHTML(state) {
 
 // HTML Generator: Settings View
 function getSettingsHTML(state) {
-    // PREFER the passed state.settings over localSettings to ensure we render what was just loaded/saved
-    const settings = state?.settings || localSettings;
-
-    // Fallback to defaults
-    const safeMode = settings.safeMode !== false;
-    const safeThreshold = settings.safeThreshold || 6;
-    const safeUnit = settings.safeUnit || 'month';
-    const debugMode = settings.debugMode || false;
+    const settings = state.settings || localSettings;
     const theme = settings.theme || 'light';
+    const safeMode = settings.safeMode !== false;
+    const safeThreshold = settings.safeThreshold || 1;
+    const safeUnit = settings.safeUnit || 'month';
+    const debugMode = settings.debugMode === true;
 
     return `
         <div class="view">
-            <div class="section-title">Settings</div>
-            
-            <div class="setting-group">
-                <!-- Appearance (No Label, just toggle) -->
-                <div class="slide-toggle slide-toggle--2" data-selected-index="${theme === 'light' ? 0 : 1}">
-                    <div class="slide-cursor"></div>
-                    <button data-action="set-theme" data-theme="light" class="slide-btn ${theme === 'light' ? 'active' : ''}" title="Light">
-                        <!-- Sun Icon -->
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="5"/>
-                            <line x1="12" y1="1" x2="12" y2="3"/>
-                            <line x1="12" y1="21" x2="12" y2="23"/>
-                            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-                            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-                            <line x1="1" y1="12" x2="3" y2="12"/>
-                            <line x1="21" y1="12" x2="23" y2="12"/>
-                            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-                            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-                        </svg>
-                    </button>
-                    <button data-action="set-theme" data-theme="dark" class="slide-btn ${theme === 'dark' ? 'active' : ''}" title="Dark">
-                        <!-- Moon Icon -->
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-                        </svg>
-                    </button>
-                </div>
-            </div>
+            <h2 class="section-title">Settings</h2>
 
-            <div class="setting-group">
-                <div class="setting-option">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="safe-mode-toggle" ${safeMode ? 'checked' : ''}>
-                        <span class="option-text">
-                            <strong>Enable Safe Mode</strong>
-                            <small>Prevent withdrawing invitations sent recently.</small>
-                        </span>
-                    </label>
-                    
-                    <div id="safe-threshold-group" class="inline-threshold" style="display: ${safeMode ? 'flex' : 'none'}">
-                        <input type="number" id="safe-threshold" value="${safeThreshold}" min="1" max="60" class="input-sm">
-                                    <select id="safe-unit" class="select-sm">
-                                        <option value="day" ${safeUnit === 'day' ? 'selected' : ''}>Days</option>
-                                        <option value="week" ${safeUnit === 'week' ? 'selected' : ''}>Weeks</option>
-                                        <option value="month" ${safeUnit === 'month' ? 'selected' : ''}>Months</option>
-                                        <option value="year" ${safeUnit === 'year' ? 'selected' : ''}>Years</option>
-                                    </select>
+            <div class="settings-group">
+                <div class="settings-item">
+                    <span class="option-text">
+                        <strong>Theme</strong>
+                        <small>Switch between light and dark mode.</small>
+                    </span>
+                    <div class="theme-toggle slide-toggle slide-toggle--2" data-selected-index="${theme === 'light' ? '0' : '1'}">
+                        <div class="theme-cursor"></div>
+                        <button data-action="set-theme" data-theme="light" class="slide-btn ${theme === 'light' ? 'active' : ''}" title="Light">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                            </svg>
+                        </button>
+                        <button data-action="set-theme" data-theme="dark" class="slide-btn ${theme === 'dark' ? 'active' : ''}" title="Dark">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
-            </div>
 
-            <div class="setting-group">
-                <div class="setting-option">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="debug-mode-toggle" ${debugMode ? 'checked' : ''}>
-                        <span class="option-text">
-                            <strong>Enable Debug Mode</strong>
-                            <small>Show detailed logs and keep window open.</small>
-                        </span>
-                    </label>
+                <div class="settings-item">
+                    <span class="option-text">
+                        <strong>Safe Mode</strong>
+                        <small>Skip invitations sent within a specific timeframe.</small>
+                    </span>
+                    <input type="checkbox" id="safe-mode-toggle" class="toggle-checkbox" ${safeMode ? 'checked' : ''}>
+                </div>
+                
+                <div id="safe-threshold-group" class="settings-item" style="display: ${safeMode ? 'flex' : 'none'}; border-top: 1px dashed var(--border-default); padding-top: 12px; margin-top: -4px;">
+                    <div class="setting-group" style="flex: 1; margin: 0;">
+                        <div class="input-row">
+                            <input type="number" id="safe-threshold" value="${safeThreshold}" min="1" max="60">
+                            <select id="safe-unit">
+                                <option value="day" ${safeUnit === 'day' ? 'selected' : ''}>Days</option>
+                                <option value="week" ${safeUnit === 'week' ? 'selected' : ''}>Weeks</option>
+                                <option value="month" ${safeUnit === 'month' ? 'selected' : ''}>Months</option>
+                                <option value="year" ${safeUnit === 'year' ? 'selected' : ''}>Years</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-item">
+                    <span class="option-text">
+                        <strong>Debug Mode</strong>
+                        <small>Show developer tools and navigate to mock views.</small>
+                    </span>
+                    <input type="checkbox" id="debug-mode-toggle" class="toggle-checkbox" ${debugMode ? 'checked' : ''}>
                 </div>
             </div>
 
-            ${debugMode ? `
-            <div class="debug-menu">
+            <div id="developer-utilities" class="debug-menu" style="display: ${debugMode ? 'block' : 'none'}">
                 <div class="debug-menu-title">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
                     Developer Utilities
@@ -1076,9 +1063,8 @@ function getSettingsHTML(state) {
                     <button class="debug-nav-btn debug-nav-btn--full" data-action="debug-nav" data-tab="wrongPage">Wrong Page View</button>
                 </div>
             </div>
-            ` : ''}
 
-            <div class="btn-row">
+            <div class="btn-row" style="margin-top: auto; padding-top: 16px;">
                 <button data-action="go-home" class="primary-btn">Done</button>
             </div>
         </div>
@@ -1502,15 +1488,28 @@ function setupEventDelegation() {
         handleAction(action, target);
     });
 
-    // Generic Change Listeners for Auto-Save
-    appRoot.addEventListener('change', (e) => {
-        const autoSaveSelectors = [
-            '#safe-mode-toggle', '#safe-threshold', '#safe-unit', '#debug-mode-toggle',
-            '#withdraw-count', '#age-value', '#age-unit'
-        ].join(', ');
+    // Event Delegation for Dynamic Content
+    document.addEventListener('change', async (e) => {
+        const target = e.target;
 
-        if (e.target.matches(autoSaveSelectors)) {
-            Logger.log('Setting changed:', e.target.id);
+        if (target.id === 'safe-mode-toggle') {
+            const thresholdGroup = document.getElementById('safe-threshold-group');
+            if (thresholdGroup) {
+                thresholdGroup.style.display = target.checked ? 'flex' : 'none';
+            }
+            autoSaveSettings();
+        }
+
+        if (target.id === 'debug-mode-toggle') {
+            const devUtils = document.getElementById('developer-utilities');
+            if (devUtils) {
+                devUtils.style.display = target.checked ? 'block' : 'none';
+            }
+            autoSaveSettings();
+        }
+
+        if (target.id === 'safe-threshold' || target.id === 'safe-unit' ||
+            target.id === 'withdraw-count' || target.id === 'age-value' || target.id === 'age-unit') {
             autoSaveSettings();
         }
     });
