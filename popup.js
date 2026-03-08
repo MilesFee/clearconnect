@@ -1044,19 +1044,51 @@ function getSettingsHTML(state) {
                 </div>
             </div>
 
-            <div class="setting-group">
-                <div class="setting-option">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="debug-mode-toggle" ${debugMode ? 'checked' : ''}>
-                        <span class="option-text">
-                            <strong>Enable Debug Mode</strong>
-                            <small>Show detailed logs and keep window open.</small>
-                        </span>
-                    </label>
-                </div>
-            </div>
+            <!-- Advanced Settings (hidden by default) -->
+            <details class="advanced-settings">
+                <summary class="advanced-toggle">Advanced</summary>
 
-            <div class="btn-row">
+                <!-- Debug Mode -->
+                <div class="setting-group">
+                    <div class="setting-option">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="debug-mode-toggle" ${debugMode ? 'checked' : ''}>
+                            <span class="option-text">
+                                <strong>Enable Debug Mode</strong>
+                                <small>Show detailed logs and keep window open.</small>
+                            </span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Layout Repair -->
+                <div class="setting-group">
+                    <div class="section-title" style="font-size: 12px; margin-bottom: 4px;">Layout Repair</div>
+                    <small class="setting-desc">If LinkedIn changed its layout and buttons can't be found, use this to re-teach the extension.</small>
+                    <div class="btn-row" style="margin-top: 8px; gap: 6px;">
+                        <button data-action="start-repair" class="secondary-btn" style="flex: 1; font-size: 12px;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                            </svg>
+                            Repair Layout
+                        </button>
+                        <button data-action="reset-learned" class="secondary-btn" id="reset-learned-btn" style="flex: 1; font-size: 12px;" title="Clear learned selectors and use defaults">
+                            Reset to Default
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Copy Config -->
+                <div class="setting-group">
+                    <div class="section-title" style="font-size: 12px; margin-bottom: 4px;">Export / Import Config</div>
+                    <small class="setting-desc">Copy learned selectors as JSON to share or back up.</small>
+                    <div class="btn-row" style="margin-top: 8px;">
+                        <button data-action="copy-config" class="secondary-btn" style="flex: 1; font-size: 12px;">Copy Config</button>
+                    </div>
+                </div>
+            </details>
+
+            <div class="btn-row" style="margin-top: 12px;">
                 <button data-action="go-home" class="primary-btn">Done</button>
             </div>
         </div>
@@ -1120,6 +1152,7 @@ async function autoSaveSettings() {
     // 1. Gather & Normalize Settings
     let safeMode = safeModeEl ? safeModeEl.checked : localSettings.safeMode;
     let debugMode = debugModeEl ? debugModeEl.checked : localSettings.debugMode;
+    Logger.DEBUG = debugMode;
 
     // Use shared normalization for Safe Mode
     const safeNorm = normalizeTimeSettings(safeThresholdEl, safeUnitEl);
@@ -1505,7 +1538,12 @@ async function handleAction(action, target) {
     switch (action) {
         // Navigation
         case 'go-home':
-            navigateTo('home');
+            // If navigating away from settings, flush current values to storage first
+            if (document.getElementById('debug-mode-toggle')) {
+                saveSettings();
+            } else {
+                navigateTo('home');
+            }
             break;
         case 'open-settings':
             navigateTo('settings');
@@ -1662,6 +1700,46 @@ async function handleAction(action, target) {
             }
             window.close();
             break;
+
+        // Layout Repair: Start Learning Mode
+        case 'start-repair':
+            if (activeTabId) {
+                try {
+                    await chrome.tabs.sendMessage(activeTabId, { action: 'START_LEARNING' });
+                    showFooterError('Learning Mode started. Switch to the LinkedIn tab.');
+                } catch (e) {
+                    showFooterError('Could not reach the LinkedIn page. Make sure you are on the Sent Invitations page.');
+                }
+            }
+            break;
+
+        // Reset Learned Selectors
+        case 'reset-learned':
+            if (activeTabId) {
+                try {
+                    await chrome.tabs.sendMessage(activeTabId, { action: 'RESET_LEARNED' });
+                } catch (e) { /* Content script may not be active */ }
+            }
+            await chrome.storage.local.remove('learned_selectors');
+            showFooterError('Learned selectors reset to defaults.');
+            break;
+
+        // Copy Config (learned selectors as JSON)
+        case 'copy-config': {
+            try {
+                const { learned_selectors } = await chrome.storage.local.get('learned_selectors');
+                const config = learned_selectors || {};
+                if (Object.keys(config).length === 0) {
+                    showFooterError('No learned selectors to copy.');
+                    break;
+                }
+                await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
+                showFooterError('Config copied to clipboard.');
+            } catch (e) {
+                showFooterError('Could not copy: ' + e.message);
+            }
+            break;
+        }
     }
 }
 
@@ -1973,6 +2051,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
         // Debug mode change
         if (changes.debugMode) {
             localSettings.debugMode = changes.debugMode.newValue;
+            Logger.DEBUG = localSettings.debugMode;
         }
         // State change
         if (changes.extension_state) {
