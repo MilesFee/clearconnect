@@ -1295,16 +1295,44 @@ body {
     text-align: center;
 }
 
-.inline-select {
-    height: 24px;
-    padding: 0 6px;
-    margin: 0 2px;
-    background: var(--bg-input);
-    border: 1px solid var(--border-default);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 12px;
-    font-family: inherit;
+/* Person Queue Statuses */
+.person-item.cleared {
+    opacity: 0.5;
+}
+
+.person-item.active {
+    border-left: 3px solid var(--brand-primary);
+    background: var(--bg-neutral);
+    font-weight: 500;
+}
+
+.person-item.errored {
+    border-left: 3px solid var(--danger);
+}
+
+.person-item.errored .person-name {
+    color: var(--danger);
+}
+
+.person-check {
+    color: var(--success);
+    font-weight: bold;
+    margin-left: auto;
+}
+
+.person-error {
+    color: var(--danger);
+    font-weight: bold;
+    margin-left: auto;
+}
+
+/* Highlights for Content Script */
+.cc-highlight-active {
+    transition: all 0.3s;
+}
+
+.cc-highlight-error {
+    transition: all 0.3s;
 }
 
 .inline-input:focus,

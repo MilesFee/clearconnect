@@ -821,9 +821,14 @@ function updatePersonStatus(name, newStatus) {
     items.forEach(item => {
         const itemName = item.getAttribute('data-name');
         if (itemName === name) {
-            item.className = `person-item ${newStatus === 'completed' ? 'cleared' : (newStatus === 'active' ? 'active' : 'pending')}`;
+            const statusClass = newStatus === 'completed' ? 'cleared' : (newStatus === 'active' ? 'active' : (newStatus === 'errored' ? 'errored' : 'pending'));
+            item.className = `person-item ${statusClass}`;
+
             if (newStatus === 'completed' && !item.querySelector('.person-check')) {
                 item.insertAdjacentHTML('beforeend', '<span class="person-check">&#10003;</span>');
+            }
+            if (newStatus === 'errored' && !item.querySelector('.person-error')) {
+                item.insertAdjacentHTML('beforeend', '<span class="person-error">&#10007;</span>');
             }
             if (newStatus === 'active') {
                 item.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -923,14 +928,15 @@ function setupEventDelegation() {
                 if (!activeTabId || selectedScanHashes.size === 0) break;
                 try {
                     // Fetch latest settings from storage before sending to content.js
-                    chrome.storage.local.get(['safeMode', 'safeThreshold', 'safeUnit', 'debugMode']).then(async (current) => {
+                    chrome.storage.local.get(['extension_state']).then(async ({ extension_state }) => {
+                        const settings = extension_state?.settings || DEFAULTS;
                         await chrome.tabs.sendMessage(activeTabId, {
                             action: 'WITHDRAW_SELECTED',
                             selectedHashes: Array.from(selectedScanHashes),
-                            debugMode: current.debugMode === true,
-                            safeMode: current.safeMode !== false,
-                            safeThreshold: current.safeThreshold || 1,
-                            safeUnit: current.safeUnit || 'month'
+                            debugMode: settings.debugMode === true,
+                            safeMode: settings.safeMode !== false,
+                            safeThreshold: settings.safeThreshold || 1,
+                            safeUnit: settings.safeUnit || 'month'
                         });
 
                         // Preserve remaining groups for "Clear More" workflow
