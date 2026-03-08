@@ -1096,25 +1096,15 @@ async function processNext() {
     }
 }
 
-async function waitAndClickDialogConfirm(retryCount = 0) {
-    const maxWait = 4000; // 4s per attempt
+async function waitAndClickDialogConfirm() {
+    const maxWait = 6000 + (retryCount * 1500);
     const checkInterval = 100;
     let waited = 0;
 
     while (waited < maxWait) {
-        // Look for the specific 'Withdraw' button in the confirmation dialog
-        const confirmBtn = document.querySelector('dialog[open] button[aria-label^="Withdrawn invitation sent to"]') ||
-            document.querySelector('dialog[open] button.artdeco-button--primary');
-
-        if (confirmBtn && confirmBtn.innerText.trim().toLowerCase().includes('withdraw')) {
+        const confirmBtn = document.querySelector('dialog[open] button[aria-label^="Withdrawn invitation sent to"]');
+        if (confirmBtn) {
             confirmBtn.click();
-
-            // Wait for dialog to disappear to confirm it's actually processed
-            let closeWaited = 0;
-            while (document.querySelector('dialog[open]') && closeWaited < 2000) {
-                await wait(100);
-                closeWaited += 100;
-            }
             return true;
         }
 
@@ -1390,31 +1380,28 @@ function highlightConnection(element, type) {
     const card = element.closest('[role="listitem"]');
     if (!card) return;
 
-    // Remove existing colors but keep basic transitions
-    card.style.transition = 'background 0.3s, border 0.3s';
-    card.classList.remove('cc-highlight-processing', 'cc-highlight-skip', 'cc-highlight-active', 'cc-highlight-error');
+    // Remove existing
+    card.classList.remove('cc-highlight-processing', 'cc-highlight-skip', 'cc-highlight-active');
 
     if (type === 'processing') {
         card.classList.add('cc-highlight-processing');
         card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        card.style.backgroundColor = 'var(--bg-surface)';
-        card.style.border = '1px solid var(--border-default)';
+        // Add temporary visual flash
+        const originalBg = card.style.backgroundColor;
+        card.style.transition = 'background 0.5s';
+        card.style.backgroundColor = '#fff3cd'; // Light yellow
+        setTimeout(() => {
+            if (card.classList.contains('cc-highlight-processing')) {
+                card.style.backgroundColor = originalBg || '';
+            }
+        }, 2000);
     } else if (type === 'active') {
         card.classList.add('cc-highlight-active');
+        card.style.transition = 'background 0.3s, border 0.3s';
         card.style.backgroundColor = '#fee2e2'; // Light red background
         card.style.border = '2px solid #ef4444'; // Bright red border
     } else if (type === 'skip') {
         card.classList.add('cc-highlight-skip');
-        card.style.backgroundColor = '';
-        card.style.border = '';
-    } else if (type === 'error') {
-        card.classList.add('cc-highlight-error');
-        card.style.backgroundColor = '#fef2f2';
-        card.style.border = '2px solid #991b1b'; // Dark red
-    } else if (type === 'none') {
-        card.style.backgroundColor = '';
-        card.style.border = '';
-        card.style.opacity = '0.5';
     }
 }
 
@@ -1678,138 +1665,137 @@ function showConnection(hash) {
 // Withdraw selected groups
 async function withdrawSelected(selectedHashes) {
     state.subMode = 'withdrawing';
-    state.sessionCleared = [];
+    state.sessionCleared = []; // Reset session cleared list for new run
     const targetHashes = new Set(selectedHashes);
+    const buttons = findWithdrawButtons(); // Working from existing list (assuming page hasn't changed much, but will verify)
+    state.stats.total = buttons.length; // Approximate, effective total is matching count
 
-    // Initial pass to build the queue names for the UI
-    const initialButtons = findWithdrawButtons();
+    // Recalculate exact total for selected
+    let matchingTotal = 0;
+
+    // Valid selected people list for UI
     const validPeople = [];
-    for (let i = initialButtons.length - 1; i >= 0; i--) {
-        const btn = initialButtons[i];
+
+    for (const btn of buttons) {
         const msg = normalizeMessage(getConnectionMessage(btn));
         if (targetHashes.has(hashMessage(msg))) {
+            matchingTotal++;
             const name = getPersonName(btn);
             if (name) {
-                validPeople.push({ name, age: getAge(btn)?.text || '-', message: msg, status: 'pending' });
+                validPeople.push({ name, age: getAge(btn)?.text || '-', message: msg, cleared: false });
             }
         }
     }
+    state.stats.total = matchingTotal;
 
-    state.stats.total = validPeople.length;
-    state.stats.processed = 0;
-    state.foundMatchingPeople = validPeople;
+    // Reverse the list so it matches the processing order (Last button = First processed = Top of list)
+    state.foundMatchingPeople = validPeople.reverse();
     saveState();
-    broadcastState('STATE_UPDATE');
 
-    // Main Processing Loop
-    // We re-scan in each iteration to handle potential DOM shifts/removals
-    let processedNames = new Set();
+    // Work from BOTTOM UP
+    state.stats.processed = 0;
 
-    while (state.isRunning && state.stats.processed < state.stats.total) {
-        // Wait if paused
-        while (state.isPaused && state.isRunning) await wait(500);
+    for (let i = buttons.length - 1; i >= 0; i--) {
         if (!state.isRunning) break;
 
-        // Re-find buttons every time to stay fresh
-        const currentButtons = findWithdrawButtons();
-        let targetBtn = null;
-        let pName = "";
-        let pMsg = "";
-        let pAge = "";
+        const btn = buttons[i];
+        const msg = normalizeMessage(getConnectionMessage(btn));
+        const hash = hashMessage(msg);
 
-        // Look for the next matching person that we haven't processed yet
-        // Start from bottom up (oldest)
-        for (let i = currentButtons.length - 1; i >= 0; i--) {
-            const btn = currentButtons[i];
-            const name = getPersonName(btn);
-            if (processedNames.has(name)) continue;
+        if (targetHashes.has(hash)) {
+            // MATCH - Process
+            const personName = getPersonName(btn);
+            const age = getAge(btn);
+            const ageText = age ? age.text : '';
 
-            const msg = normalizeMessage(getConnectionMessage(btn));
-            if (targetHashes.has(hashMessage(msg))) {
-                targetBtn = btn;
-                pName = name;
-                pMsg = msg;
-                pAge = getAge(btn)?.text || '';
-                break;
+            // Safety check
+            if (!isSafe(btn)) {
+                complete(`Safety stop: ${personName} (${ageText}) was too recent... ${state.stats.processed} older connections cleared.`, {}, 'safety');
+                state.isRunning = false;
+                return;
             }
-        }
 
-        if (!targetBtn) {
-            Logger.log('ClearConnect: No more matching buttons found on page.');
-            break;
-        }
-
-        // Safety check
-        if (!isSafe(targetBtn)) {
-            complete(`Safety stop: ${pName} (${pAge}) was too recent.`, {}, 'safety');
-            state.isRunning = false;
-            return;
-        }
-
-        processedNames.add(pName);
-
-        // Highlight and notify UI
-        targetBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        highlightConnection(targetBtn, 'active');
-
-        updateStatus(`[${state.stats.processed + 1}/${state.stats.total}] ${pName}`, Math.round((state.stats.processed / state.stats.total) * 100), {
-            name: pName,
-            status: 'active'
-        });
-
-        await wait(500); // Visual stability
-
-        let success = false;
-        const maxRetries = 2;
-
-        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            // Wait if paused
+            while (state.isPaused && state.isRunning) {
+                await wait(500);
+            }
             if (!state.isRunning) break;
 
+            // Scroll to center for visibility
+            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            highlightConnection(btn, 'active');
+
+            // Highlight Withdraw Button
+            const withdrawSpan = btn.querySelector('span');
+            if (withdrawSpan) withdrawSpan.classList.add('cc-highlight-withdraw');
+
+            // Send 'active' status for queue update
+            updateStatus(`[${state.stats.processed + 1}/${state.stats.total}] ${personName}`, Math.round((state.stats.processed / state.stats.total) * 100), {
+                name: personName,
+                age: ageText,
+                status: 'active'
+            });
+
+            await wait(300); // Visual delay
+
+            let confirmed = false;
+
             if (state.settings.debugMode) {
-                await wait(1000);
-                success = true;
-                break;
+                // Debug mode: Just highlight, don't click
+                const card = btn.closest('[role="listitem"]');
+                if (card) {
+                    card.style.transition = 'background 0.3s, border 0.3s';
+                    card.style.backgroundColor = '#fff3cd';
+                    card.style.border = '2px solid #ffc107';
+                }
+                btn.style.backgroundColor = '#ffc107';
+                btn.style.color = '#000';
+                btn.style.fontWeight = 'bold';
+
+                await wait(800);
+                confirmed = true;
+
+                // Hide the card after highlighting to simulate withdrawal
+                if (card) {
+                    setTimeout(() => {
+                        card.style.display = 'none';
+                    }, 1000);
+                }
+            } else {
+                // Normal mode: Actually click
+                btn.click();
+                confirmed = await waitAndClickDialogConfirm();
             }
 
-            // Click the main withdraw button
-            targetBtn.click();
+            if (confirmed) {
+                state.stats.processed++;
+                // Record to history with project/topic
+                const profileUrl = getProfileUrl(btn);
+                const projectName = msg.length > 60 ? msg.substring(0, 60) + '...' : msg;
+                await recordWithdrawal(personName, profileUrl, ageText, projectName);
 
-            // Wait for and click confirmation
-            success = await waitAndClickDialogConfirm(attempt);
+                // Send 'completed' status for queue update
+                const statusPrefix = state.settings.debugMode ? '[DEBUG] ' : '';
+                updateStatus(`${statusPrefix}[${state.stats.processed}/${state.stats.total}] Cleared ${personName}`, Math.round((state.stats.processed / state.stats.total) * 100), {
+                    name: personName,
+                    age: ageText,
+                    status: 'completed'
+                });
 
-            if (success) break;
+                // Remove highlight? Element might be gone/detached
+            }
 
-            Logger.log(`ClearConnect: Retry ${attempt + 1} for ${pName}`);
-            await wait(1000);
-        }
+            await wait(actionDelay);
 
-        if (success) {
-            state.stats.processed++;
-            const profileUrl = getProfileUrl(targetBtn);
-            const projectName = pMsg.length > 60 ? pMsg.substring(0, 60) + '...' : pMsg;
-            await recordWithdrawal(pName, profileUrl, pAge, projectName);
-
-            highlightConnection(targetBtn, 'none'); // Fade out
-
-            updateStatus(`Cleared ${pName}`, Math.round((state.stats.processed / state.stats.total) * 100), {
-                name: pName,
-                status: 'completed'
-            });
         } else {
-            Logger.error(`ClearConnect: Failed to clear ${pName} after retries.`);
-            highlightConnection(targetBtn, 'error');
-            updateStatus(`Failed: ${pName}`, Math.round((state.stats.processed / state.stats.total) * 100), {
-                name: pName,
-                status: 'errored'
-            });
+            // SKIP
+            highlightConnection(btn, 'skip');
+            // fast continue
         }
-
-        await wait(actionDelay);
     }
 
-    if (state.isRunning) {
-        complete(`Done! Cleared ${state.stats.processed} selected connections.`);
-    }
+    complete(`Done! Cleared ${state.stats.processed} selected connections.`);
 }
 // Listen for external storage changes (e.g. settings updated in popup)
 chrome.storage.onChanged.addListener((changes, area) => {
