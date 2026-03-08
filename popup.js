@@ -738,11 +738,12 @@ async function renderUI(state) {
 // Navigate by updating storage (triggers re-render via onChanged)
 async function navigateTo(tab, passedState = null) {
     let state;
+    const { extension_state } = await chrome.storage.local.get('extension_state');
+    state = extension_state || { ...DEFAULT_STATE };
+
     if (passedState) {
-        state = passedState;
-    } else {
-        const { extension_state } = await chrome.storage.local.get('extension_state');
-        state = extension_state || { ...DEFAULT_STATE };
+        // Merge passed state for mock/debug data
+        state = { ...state, ...passedState };
     }
 
     // Block navigation if running (except to progress)
@@ -761,7 +762,10 @@ async function navigateTo(tab, passedState = null) {
     renderUI(state);
 
     // 4. Persist Safely
-    await safeSaveState({ uiNavigation: { currentTab: tab } });
+    await safeSaveState({
+        uiNavigation: { currentTab: tab },
+        ...(passedState || {}) // Persist mock data if provided
+    });
 }
 
 // ============ TEMPLATE FUNCTIONS ============
@@ -1055,6 +1059,24 @@ function getSettingsHTML(state) {
                     </label>
                 </div>
             </div>
+
+            ${debugMode ? `
+            <div class="debug-menu">
+                <div class="debug-menu-title">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                    Developer Utilities
+                </div>
+                <div class="debug-nav-grid">
+                    <button class="debug-nav-btn" data-action="debug-nav" data-tab="home">Home View</button>
+                    <button class="debug-nav-btn" data-action="debug-nav" data-tab="history">History View</button>
+                    <button class="debug-nav-btn" data-action="debug-nav" data-tab="stats">Stats View</button>
+                    <button class="debug-nav-btn" data-action="debug-nav" data-tab="progress" data-mock="scanning">Scanning Mock</button>
+                    <button class="debug-nav-btn" data-action="debug-nav" data-tab="progress" data-mock="withdrawing">Withdraw Mock</button>
+                    <button class="debug-nav-btn" data-action="debug-nav" data-tab="completed" data-mock="completed">Completed Mock</button>
+                    <button class="debug-nav-btn debug-nav-btn--full" data-action="debug-nav" data-tab="wrongPage">Wrong Page View</button>
+                </div>
+            </div>
+            ` : ''}
 
             <div class="btn-row">
                 <button data-action="go-home" class="primary-btn">Done</button>
@@ -1661,6 +1683,57 @@ async function handleAction(action, target) {
                 chrome.tabs.reload(activeTabId);
             }
             window.close();
+            break;
+
+        case 'debug-nav':
+            const targetTab = target.getAttribute('data-tab');
+            const mockType = target.getAttribute('data-mock');
+            let mockState = {};
+
+            if (mockType === 'scanning') {
+                mockState = {
+                    isRunning: true,
+                    subMode: 'scanning',
+                    status: { text: 'Scanning connections...', progress: 45 },
+                    stats: { processed: 0, total: 100 }
+                };
+            } else if (mockType === 'withdrawing') {
+                mockState = {
+                    isRunning: true,
+                    subMode: 'withdrawing',
+                    status: { text: 'Withdrawing...', progress: 65 },
+                    stats: { processed: 12, total: 20 },
+                    foundMatchingPeople: Array(20).fill(0).map((_, i) => ({
+                        name: `Connection ${i + 1}`,
+                        age: `${i + 1}d ago`,
+                        status: i < 12 ? 'completed' : (i === 12 ? 'active' : 'pending')
+                    }))
+                };
+            } else if (mockType === 'completed') {
+                mockState = {
+                    isRunning: false,
+                    subMode: 'idle',
+                    stats: { processed: 8, total: 8 },
+                    sessionCleared: Array(8).fill(0).map((_, i) => ({
+                        name: `Cleared ${i + 1}`,
+                        age: `${i + 1}w ago`
+                    })),
+                    lastRunResult: { stopType: 'success', message: 'Success', processed: 8, timestamp: Date.now() }
+                };
+            }
+
+            // If navigating to sidepanel-only views, open sidepanel
+            if (['progress', 'scanResults', 'completed'].includes(targetTab)) {
+                chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+                    if (tab?.id) {
+                        chrome.sidePanel.open({ tabId: tab.id }).catch(e => {
+                            Logger.error('Failed to open sidepanel from debug:', e);
+                        });
+                    }
+                });
+            }
+
+            navigateTo(targetTab, mockState);
             break;
     }
 }
