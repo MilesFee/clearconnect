@@ -208,8 +208,8 @@ body {
 .scrollable-view-content {
     flex: 1;
     overflow-y: auto;
-    padding: 1px;
-    /* Avoid margin collapse issues */
+    padding: 2px;
+    /* Increased to 2px to prevent border clipping */
     margin-bottom: 12px;
 }
 
