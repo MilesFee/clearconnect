@@ -1607,16 +1607,13 @@ async function handleAction(action, target) {
         case 'withdraw-selected':
             if (!activeTabId || selectedScanHashes.size === 0) break;
             try {
-                const { extension_state } = await chrome.storage.local.get('extension_state');
-                const settings = extension_state?.settings || localSettings;
-
                 await chrome.tabs.sendMessage(activeTabId, {
                     action: 'WITHDRAW_SELECTED',
                     selectedHashes: Array.from(selectedScanHashes),
-                    debugMode: settings.debugMode === true,
-                    safeMode: settings.safeMode !== false,
-                    safeThreshold: settings.safeThreshold || 1,
-                    safeUnit: settings.safeUnit || 'month'
+                    debugMode: localSettings.debugMode === true,
+                    safeMode: localSettings.safeMode !== false,
+                    safeThreshold: localSettings.safeThreshold || 1,
+                    safeUnit: localSettings.safeUnit || 'month'
                 });
 
                 // FILTER & SAVE REMAINING RESULTS for "Clear More" workflow
