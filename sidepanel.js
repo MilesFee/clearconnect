@@ -319,11 +319,9 @@ function getProgressHTML(state) {
 
     return `
         <div class="view">
-            <div class="scrollable-view-content">
-                ${getSafeNoticeHTML(state)}
-                <h2 id="active-operation-title" class="section-title">${isScanning ? 'Scanning connections...' : 'Clearing connections...'}</h2>
-                ${layoutHTML}
-            </div>
+            ${getSafeNoticeHTML(state)}
+            <h2 id="active-operation-title" class="section-title">${isScanning ? 'Scanning connections...' : 'Clearing connections...'}</h2>
+            ${layoutHTML}
             <div id="progress-actions" class="progress-actions" style="display: flex; gap: 8px; margin-top: 12px;">
                 <button data-action="toggle-pause" class="secondary-btn" style="flex: 1; ${isWithdrawing ? '' : 'display:none;'}"><span class="btn-text">${isPaused ? 'Resume' : 'Pause'}</span></button>
                 <button data-action="stop-operation" class="secondary-btn" style="flex: 1;"><span class="btn-text">Stop</span></button>
