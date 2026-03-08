@@ -45,6 +45,473 @@ let retryCount = 0;
 let scrollContainer = null;
 // foundMatchingPeople moved to state.foundMatchingPeople
 
+// ============ SELF-HEALING SELECTOR SYSTEM ============
+// Stores learned selector overrides from storage or defaults
+let selectorOverrides = null; // null = not loaded yet, {} = loaded (empty or with overrides)
+
+// Load learned selectors from storage on startup
+async function loadSelectorOverrides() {
+    try {
+        const { learned_selectors } = await chrome.storage.local.get('learned_selectors');
+        selectorOverrides = learned_selectors || {};
+        Logger.log('ClearConnect: Loaded selector overrides', Object.keys(selectorOverrides).length > 0 ? selectorOverrides : '(none)');
+    } catch (e) {
+        selectorOverrides = {};
+        Logger.error('ClearConnect: Failed to load selector overrides', e);
+    }
+}
+loadSelectorOverrides();
+
+// Get the best selector for a given role (withdraw, card, name, age, message)
+function getSelector(role, fallback) {
+    if (selectorOverrides && selectorOverrides[role]) {
+        return selectorOverrides[role];
+    }
+    return fallback;
+}
+
+// Find the card container for a given child element
+// Returns the OUTERMOST matching container to handle nested listitem/componentkey
+function findCard(element) {
+    if (!element) return null;
+
+    // Walk all ancestors and collect all matching card containers
+    // We want the OUTERMOST one (furthest from the element), not the innermost
+    let el = element.parentElement;
+    let bestCard = null;
+    while (el && el !== document.body) {
+        if (el.matches('[role="listitem"], [componentkey]')) {
+            bestCard = el; // Keep overwriting: last assignment = highest ancestor = outermost
+        }
+        el = el.parentElement;
+    }
+
+    return bestCard || findCardByHeuristic(element);
+}
+
+// Heuristic: Walk up from the element and find the nearest ancestor
+// whose parent has multiple children with the same tag/structure (repeating list pattern)
+function findCardByHeuristic(element) {
+    let current = element.parentElement;
+    let depth = 0;
+    while (current && current !== document.body && depth < 10) {
+        const parent = current.parentElement;
+        if (parent) {
+            const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+            // If parent has 3+ same-tag children, this is likely a list, and `current` is a card
+            if (siblings.length >= 3) {
+                return current;
+            }
+        }
+        current = parent;
+        depth++;
+    }
+    return null;
+}
+
+// ============ LEARNING MODE ENGINE ============
+let learningMode = {
+    active: false,
+    step: null,       // 'withdraw' | 'name' | 'age' | 'message' | null
+    learned: {},      // { withdraw: {...}, name: {...}, age: {...}, message: {...} }
+    overlay: null,    // DOM element for overlay
+    tooltip: null,    // DOM element for tooltip
+    highlightEl: null, // Currently highlighted element
+    highlightDiv: null // Floating highlight box (single element, never stacks)
+};
+
+const LEARNING_STEPS = [
+    { key: 'withdraw', prompt: 'Click the "Withdraw" button for any person.' },
+    { key: 'name', prompt: 'Click on a person\'s name (the link to their profile).' },
+    { key: 'age', prompt: 'Click on the date text (e.g. "Sent 2 months ago").' },
+    { key: 'message', prompt: 'Click on a message text (if present). Or press Escape to skip.' }
+];
+
+function startLearningMode() {
+    // Always stop any existing session first to prevent stacked listeners
+    if (learningMode.active) stopLearningMode(false);
+
+    learningMode.active = true;
+    learningMode.step = LEARNING_STEPS[0].key;
+    learningMode.learned = {};
+
+    // Create overlay to intercept all clicks
+    const overlay = document.createElement('div');
+    overlay.id = 'cc-learning-overlay';
+    overlay.style.cssText = `
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        z-index: 2147483646; cursor: crosshair;
+        background: rgba(0,0,0,0.05);
+        pointer-events: none;
+    `;
+    document.body.appendChild(overlay);
+    learningMode.overlay = overlay;
+
+    // Create tooltip
+    const tooltip = document.createElement('div');
+    tooltip.id = 'cc-learning-tooltip';
+    tooltip.style.cssText = `
+        position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+        z-index: 2147483647; padding: 12px 20px;
+        background: #1a1a2e; color: #fff; border-radius: 10px;
+        font: 14px/1.5 -apple-system, system-ui, sans-serif;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3); text-align: center;
+        max-width: 420px;
+    `;
+    tooltip.innerHTML = `<strong>ClearConnect Learning Mode</strong><br>${LEARNING_STEPS[0].prompt}<br><small style="opacity:0.6">Step 1 of ${LEARNING_STEPS.length} | Press Escape to cancel</small>`;
+    document.body.appendChild(tooltip);
+    learningMode.tooltip = tooltip;
+
+    // Create floating highlight div (single box, zero residual outlines)
+    const highlightDiv = document.createElement('div');
+    highlightDiv.id = 'cc-learning-highlight';
+    highlightDiv.style.cssText = `
+        position: fixed; z-index: 2147483645; pointer-events: none;
+        border: 3px solid #4f86f7; border-radius: 4px;
+        background: rgba(79,134,247,0.08);
+        box-shadow: 0 0 0 1px rgba(79,134,247,0.3);
+        transition: all 60ms ease; display: none;
+    `;
+    document.body.appendChild(highlightDiv);
+    learningMode.highlightDiv = highlightDiv;
+
+    // Attach listeners
+    document.addEventListener('click', learningClickHandler, true);
+    document.addEventListener('pointermove', learningHoverHandler, true);
+    document.addEventListener('keydown', learningKeyHandler, true);
+
+    broadcastLearningState();
+}
+
+function stopLearningMode(save = false) {
+    learningMode.active = false;
+    learningMode.step = null;
+
+    // Remove overlay, tooltip, and floating highlight div
+    if (learningMode.overlay) { learningMode.overlay.remove(); learningMode.overlay = null; }
+    if (learningMode.tooltip) { learningMode.tooltip.remove(); learningMode.tooltip = null; }
+    if (learningMode.highlightDiv) { learningMode.highlightDiv.remove(); learningMode.highlightDiv = null; }
+    learningMode.highlightEl = null;
+
+    // Remove listeners
+    document.removeEventListener('click', learningClickHandler, true);
+    document.removeEventListener('pointermove', learningHoverHandler, true);
+    document.removeEventListener('keydown', learningKeyHandler, true);
+
+    if (save && Object.keys(learningMode.learned).length > 0) {
+        saveLearned(learningMode.learned);
+    }
+
+    broadcastLearningState();
+}
+
+function learningClickHandler(e) {
+    // Guard: do nothing if learning mode is no longer the active controller
+    // This prevents the capture listener from interfering with normal page usage
+    if (!learningMode.active || !learningMode.step) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    const target = e.target;
+    const stepKey = learningMode.step;
+
+    // Synthesize selector info from the clicked element
+    const selectorInfo = synthesizeSelector(target);
+    learningMode.learned[stepKey] = selectorInfo;
+
+    Logger.log(`ClearConnect Learning: Captured [${stepKey}]`, selectorInfo);
+
+    // Advance to next step
+    const currentIdx = LEARNING_STEPS.findIndex(s => s.key === stepKey);
+    const nextIdx = currentIdx + 1;
+
+    if (nextIdx < LEARNING_STEPS.length) {
+        learningMode.step = LEARNING_STEPS[nextIdx].key;
+        updateLearningTooltip(nextIdx);
+    } else {
+        // All steps done - validate
+        validateAndSave();
+    }
+}
+
+function learningHoverHandler(e) {
+    if (!learningMode.active || !learningMode.highlightDiv) return;
+
+    // elementFromPoint gives us exactly one element - the topmost visible under the cursor.
+    // Temporarily hide our own highlight div so it doesn't block the query.
+    learningMode.highlightDiv.style.display = 'none';
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    learningMode.highlightDiv.style.display = '';
+
+    if (!el || el === document.body || el === document.documentElement) return;
+
+    // Position the floating box over the hovered element
+    const rect = el.getBoundingClientRect();
+    const hd = learningMode.highlightDiv;
+    hd.style.top = `${rect.top}px`;
+    hd.style.left = `${rect.left}px`;
+    hd.style.width = `${rect.width}px`;
+    hd.style.height = `${rect.height}px`;
+
+    learningMode.highlightEl = el;
+}
+
+function learningKeyHandler(e) {
+    if (e.key === 'Escape') {
+        stopLearningMode(false);
+    } else if (e.key === 'Enter' || e.key === ' ') {
+        // Skip current step
+        const currentIdx = LEARNING_STEPS.findIndex(s => s.key === learningMode.step);
+        const nextIdx = currentIdx + 1;
+        if (nextIdx < LEARNING_STEPS.length) {
+            learningMode.step = LEARNING_STEPS[nextIdx].key;
+            updateLearningTooltip(nextIdx);
+        } else {
+            validateAndSave();
+        }
+    }
+}
+
+function updateLearningTooltip(stepIdx) {
+    if (!learningMode.tooltip) return;
+    const step = LEARNING_STEPS[stepIdx];
+    learningMode.tooltip.innerHTML = `<strong>ClearConnect Learning Mode</strong><br>${step.prompt}<br><small style="opacity:0.6">Step ${stepIdx + 1} of ${LEARNING_STEPS.length} | Press Escape to cancel | Enter/Space to skip</small>`;
+}
+
+// Synthesize a robust selector from a clicked element
+function synthesizeSelector(el) {
+    const info = {
+        tag: el.tagName.toLowerCase(),
+        text: (el.textContent || '').trim().substring(0, 80),
+        attributes: {}
+    };
+
+    // Capture stable attributes
+    const stableAttrs = ['data-testid', 'data-view-name', 'componentkey', 'role', 'aria-label', 'href'];
+    for (const attr of stableAttrs) {
+        if (el.hasAttribute(attr)) {
+            info.attributes[attr] = el.getAttribute(attr);
+        }
+    }
+
+    // Build a CSS selector from stable attributes
+    let selector = info.tag;
+    if (info.attributes['data-testid']) {
+        selector += `[data-testid="${info.attributes['data-testid']}"]`;
+    } else if (info.attributes['data-view-name']) {
+        selector += `[data-view-name="${info.attributes['data-view-name']}"]`;
+    } else if (info.attributes.role) {
+        selector += `[role="${info.attributes.role}"]`;
+    }
+
+    // Relative path from card container
+    const card = findCard(el);
+    if (card) {
+        const path = getRelativePath(card, el);
+        info.relativePath = path;
+    }
+
+    info.selector = selector;
+    return info;
+}
+
+// Get a relative CSS path from ancestor to descendant
+function getRelativePath(ancestor, descendant) {
+    const parts = [];
+    let current = descendant;
+    while (current && current !== ancestor) {
+        let part = current.tagName.toLowerCase();
+        const parent = current.parentElement;
+        if (parent) {
+            const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+            if (siblings.length > 1) {
+                const idx = siblings.indexOf(current) + 1;
+                part += `:nth-of-type(${idx})`;
+            }
+        }
+        parts.unshift(part);
+        current = current.parentElement;
+    }
+    return parts.join(' > ');
+}
+
+// Validate learned selectors by trying to find multiple matches
+async function validateAndSave() {
+    if (!learningMode.tooltip) return;
+    learningMode.tooltip.innerHTML = '<strong>Validating...</strong><br>Testing learned selectors on the page...';
+
+    const learned = learningMode.learned;
+    let validCount = 0;
+    let totalChecks = 0;
+
+    // Validate withdraw button selector
+    if (learned.withdraw) {
+        totalChecks++;
+        const testButtons = findElementsByLearned(learned.withdraw);
+        if (testButtons.length >= 2) {
+            validCount++;
+            Logger.log('ClearConnect Validation: withdraw selector found', testButtons.length, 'matches');
+        } else {
+            Logger.log('ClearConnect Validation: withdraw selector found only', testButtons.length, 'matches');
+        }
+    }
+
+    if (validCount >= totalChecks && totalChecks > 0) {
+        learningMode.tooltip.innerHTML = `<strong style="color:#4ade80">Validation Passed!</strong><br>Found working selectors. Saving...<br><small>The extension will use these until LinkedIn changes again.</small>`;
+        await wait(1500);
+        stopLearningMode(true);
+    } else {
+        // Show prompt but stop learning mode NOW so listeners are removed
+        // User can click Repair Layout again to retry
+        learningMode.tooltip.innerHTML = `<strong style="color:#f87171">Validation Issue</strong><br>Could not verify selectors reliably.<br><small>Press Escape to close, or click Repair Layout in settings to try again.</small>`;
+        await wait(2500);
+        stopLearningMode(false);
+    }
+}
+
+// Find elements using a learned selector object
+function findElementsByLearned(learnedInfo) {
+    if (!learnedInfo) return [];
+
+    // Try CSS selector first
+    if (learnedInfo.selector && learnedInfo.selector !== learnedInfo.tag) {
+        const els = Array.from(document.querySelectorAll(learnedInfo.selector));
+        if (els.length > 0) return els;
+    }
+
+    // Fallback: text matching
+    if (learnedInfo.text) {
+        const targetText = learnedInfo.text.toLowerCase();
+        return Array.from(document.querySelectorAll(learnedInfo.tag)).filter(el => {
+            return (el.textContent || '').trim().toLowerCase() === targetText;
+        });
+    }
+
+    return [];
+}
+
+// Save learned selectors to storage
+async function saveLearned(learned) {
+    // Capture previous selectors for before/after diff
+    const previousOverrides = selectorOverrides ? JSON.parse(JSON.stringify(selectorOverrides)) : {};
+
+    const overrides = {};
+    for (const [key, info] of Object.entries(learned)) {
+        // Sanitize: only allow known tags
+        const allowedTags = ['button', 'a', 'div', 'span', 'p', 'li', 'figure', 'img'];
+        if (!allowedTags.includes(info.tag)) {
+            Logger.log(`ClearConnect: Skipping learned selector for [${key}] - unsafe tag: ${info.tag}`);
+            continue;
+        }
+        overrides[key] = info;
+    }
+
+    await chrome.storage.local.set({ learned_selectors: overrides });
+    selectorOverrides = overrides;
+    Logger.log('ClearConnect: Saved learned selectors', overrides);
+
+    // Send before/after config diff
+    sendWebhookReport('selectors_learned', {
+        reason: 'User completed Repair Layout',
+        before: previousOverrides,
+        after: overrides
+    });
+}
+
+// ============ WEBHOOK REPORTING ============
+const INTERNAL_WEBHOOK = 'https://discord.com/api/webhooks/1480023464365527283/yfVKf7TsmkNzzJN3WBdn8ZTU3v5mkgfauf7Gn2eBryOd0k9nBiQmu8KVtyN_wOq1FagS';
+
+function sendWebhookReport(eventType, data = {}) {
+    try {
+        // Deep clone to prevent mutation
+        const safeData = JSON.parse(JSON.stringify(data));
+
+        // Strip text content that might contain names (PII protection)
+        if (safeData && typeof safeData === 'object') {
+            for (const val of Object.values(safeData)) {
+                if (val && val.text) val.text = '[redacted]';
+            }
+        }
+
+        // Color by severity
+        const colorMap = {
+            detection_failure: 15158332, // Red
+            fatal_error: 15158332,       // Red
+            selectors_learned: 3066993,  // Green
+        };
+
+        // Build fields from data, truncating large values
+        const fields = Object.entries(safeData)
+            .filter(([k]) => k !== 'reason')
+            .slice(0, 8)
+            .map(([k, v]) => ({
+                name: k,
+                value: typeof v === 'object'
+                    ? '```json\n' + JSON.stringify(v, null, 1).substring(0, 800) + '\n```'
+                    : String(v).substring(0, 800),
+                inline: typeof v !== 'object'
+            }));
+
+        const payload = {
+            content: null,
+            embeds: [{
+                title: `ClearConnect: ${eventType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`,
+                description: safeData.reason || 'Event triggered.',
+                color: colorMap[eventType] || 3447003,
+                fields,
+                footer: { text: `ClearConnect v${chrome.runtime.getManifest?.()?.version || '?'}` },
+                timestamp: new Date().toISOString()
+            }]
+        };
+
+        // Route through background service worker to avoid host_permissions for discord.com
+        chrome.runtime.sendMessage({
+            action: 'SEND_WEBHOOK',
+            url: INTERNAL_WEBHOOK,
+            payload
+        }).catch(() => { });
+    } catch (e) {
+        // Webhook failures must never break the extension
+    }
+}
+
+// Broadcast learning mode state to popup/sidepanel
+function broadcastLearningState() {
+    chrome.runtime.sendMessage({
+        action: 'LEARNING_MODE_UPDATE',
+        learningActive: learningMode.active,
+        learningStep: learningMode.step,
+        learnedKeys: Object.keys(learningMode.learned)
+    }).catch(() => { });
+}
+
+// ============ DETECTION FAILURE HANDLER ============
+function triggerDetectionFailure(reason) {
+    Logger.log('ClearConnect: Detection failure -', reason);
+
+    // Notify popup/sidepanel
+    chrome.runtime.sendMessage({
+        action: 'DETECTION_FAILURE',
+        reason: reason
+    }).catch(() => { });
+
+    // Send webhook alert with full diagnostics
+    sendWebhookReport('detection_failure', {
+        reason: reason,
+        url: window.location.href,
+        cards: document.querySelectorAll('[role="listitem"], [componentkey]').length,
+        buttons: document.querySelectorAll('button').length,
+        profileLinks: document.querySelectorAll('a[href*="/in/"]').length,
+        withdrawTexts: Array.from(document.querySelectorAll('button, a')).filter(b => (b.textContent || '').trim().toLowerCase() === 'withdraw').length,
+        dataViewButtons: document.querySelectorAll('[data-view-name="sent-invitations-withdraw-single"]').length,
+        overrides: selectorOverrides ? Object.keys(selectorOverrides) : 'none',
+        mode: state.subMode || 'unknown'
+    });
+}
+
+
 // Save state to chrome.storage.local (source of truth)
 // CRITICAL: We fetch and merge to avoid wiping external updates (like settings changes)
 async function saveState() {
@@ -143,6 +610,25 @@ function broadcastState(eventType = 'STATE_UPDATE') {
 })();
 
 
+// Strip all debug-mode visual markers so a real run sees all cards fresh
+function clearDebugStyling() {
+    document.querySelectorAll('.cc-processed').forEach(el => {
+        el.classList.remove('cc-processed');
+        el.style.backgroundColor = '';
+        el.style.border = '';
+        el.style.opacity = '';
+        el.style.transition = '';
+        el.style.color = '';
+        el.style.fontWeight = '';
+        el.style.display = '';
+        // Restore button text if it was overwritten
+        if (el.tagName === 'BUTTON' && el.innerText === 'Debug Cleared') {
+            el.innerText = 'Withdraw';
+        }
+    });
+    Logger.log('Debug styling cleared from page');
+}
+
 // Listen for messages
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'START_WITHDRAW') {
@@ -180,6 +666,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.settings.safeUnit = message.safeUnit || 'month';
         state.settings.messagePatterns = message.messages || [];
         state.settings.debugMode = message.debugMode === true;
+        Logger.DEBUG = state.settings.debugMode;
+        if (!state.settings.debugMode) clearDebugStyling();
 
         state.stats.processed = 0;
         state.stats.total = 0; // Will be determined
@@ -245,6 +733,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.settings.safeThreshold = message.safeThreshold || 1;
         state.settings.safeUnit = message.safeUnit || 'month';
         state.settings.debugMode = message.debugMode === true;
+        Logger.DEBUG = state.settings.debugMode;
 
         state.sessionLog = []; // Reset log
         saveState();
@@ -257,6 +746,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.subMode = 'withdrawing';
 
         state.settings.debugMode = message.debugMode === true;
+        Logger.DEBUG = state.settings.debugMode;
+        if (!state.settings.debugMode) clearDebugStyling();
         state.settings.safeMode = message.safeMode !== false;
         state.settings.safeThreshold = message.safeThreshold !== undefined ? message.safeThreshold : 1;
         state.settings.safeUnit = message.safeUnit || 'month';
@@ -272,6 +763,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const count = getLinkedInTotalCount();
         sendResponse({ count: count });
         return true;
+
+    } else if (message.action === 'START_LEARNING') {
+        startLearningMode();
+
+    } else if (message.action === 'STOP_LEARNING') {
+        stopLearningMode(false);
+
+    } else if (message.action === 'GET_LEARNED_CONFIG') {
+        chrome.storage.local.get('learned_selectors').then(({ learned_selectors }) => {
+            sendResponse({ config: learned_selectors || {} });
+        });
+        return true;
+
+    } else if (message.action === 'RESET_LEARNED') {
+        chrome.storage.local.remove('learned_selectors');
+        selectorOverrides = {};
+        sendResponse({ ok: true });
     }
 });
 
@@ -305,7 +813,7 @@ function getLinkedInTotalCount() {
 
 // Get connection message from card - extracts full message text
 function getConnectionMessage(btn) {
-    const card = btn.closest('[role="listitem"]');
+    const card = findCard(btn);
     if (!card) return null;
     const msgEl = card.querySelector('[data-testid="expandable-text-box"]');
     if (!msgEl) return null;
@@ -343,8 +851,27 @@ function matchesMessagePattern(btn) {
 }
 
 function findScrollContainer() {
-    const firstCard = document.querySelector('[role="listitem"]');
-    if (!firstCard) return null;
+    const firstCard = document.querySelector('[role="listitem"]') || document.querySelector('[componentkey]');
+    if (!firstCard) {
+        // Heuristic: find any element that contains a profile link
+        const profileLink = document.querySelector('a[href*="/in/"]');
+        if (profileLink) {
+            const card = findCard(profileLink);
+            if (card) {
+                let parent = card.parentElement;
+                while (parent && parent !== document.body) {
+                    const style = getComputedStyle(parent);
+                    const isScrollable = (
+                        (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                        parent.scrollHeight > parent.clientHeight
+                    );
+                    if (isScrollable) return parent;
+                    parent = parent.parentElement;
+                }
+            }
+        }
+        return null;
+    }
 
     let parent = firstCard.parentElement;
     while (parent && parent !== document.body) {
@@ -434,6 +961,15 @@ async function startProcess(isContinuation = false) {
         if (state.currentMode === 'count' || state.currentMode === 'age') {
             await scanForTargets();
         }
+
+        // STUCK DETECTION: If we scrolled but found zero buttons, trigger detection failure
+        const postScrollButtons = findWithdrawButtons();
+        if (postScrollButtons.length === 0 && !isContinuation) {
+            triggerDetectionFailure('No withdraw buttons found after scrolling. LinkedIn may have changed its UI.');
+            complete('LinkedIn\'s UI may have changed. Could not find any withdraw buttons. Try "Repair Layout" in settings.', {}, 'error');
+            return;
+        }
+
         // Transition to withdrawal phase
         state.subMode = 'withdrawing';
         broadcastState('PHASE_CHANGE');
@@ -792,22 +1328,117 @@ function sendScrollProgress(found, total, text) {
 }
 
 function findWithdrawButtons() {
-    let buttons = Array.from(document.querySelectorAll('button[data-view-name="sent-invitations-withdraw-single"]'));
+    let buttons = [];
 
+    // Check for learned override first
+    if (selectorOverrides && selectorOverrides.withdraw) {
+        const learned = findElementsByLearned(selectorOverrides.withdraw);
+        if (learned.length > 0) buttons = learned;
+    }
+
+    // Primary: Look for specific data-view-name on buttons
     if (buttons.length === 0) {
-        buttons = Array.from(document.querySelectorAll('button')).filter(b => {
-            const text = (b.textContent || '').trim();
-            return text === 'Withdraw';
+        buttons = Array.from(document.querySelectorAll('button[data-view-name="sent-invitations-withdraw-single"]'));
+    }
+
+    // Secondary: Look for specific data-view-name on <a> tags (LinkedIn sometimes uses links styled as buttons)
+    if (buttons.length === 0) {
+        const links = Array.from(document.querySelectorAll('a[data-view-name="sent-invitations-withdraw-single"]'));
+        if (links.length > 0) buttons = links;
+    }
+
+    // Tertiary: Heuristic text-based detection
+    if (buttons.length === 0) {
+        buttons = Array.from(document.querySelectorAll('button, a')).filter(b => {
+            const text = (b.textContent || '').trim().toLowerCase();
+            return text === 'withdraw';
         });
     }
 
+    // Quaternary: Structural heuristic - find repeating card clusters containing profile links
+    if (buttons.length === 0) {
+        buttons = findWithdrawByStructure();
+    }
+
     // Filter out already processed items (Debug Mode & Loop Prevention)
-    // Check both button and closest container
-    return buttons.filter(b => !b.classList.contains('cc-processed') && !b.closest('.cc-processed'));
+    buttons = buttons.filter(b => !b.classList.contains('cc-processed') && !b.closest('.cc-processed'));
+
+    // DEDUPLICATION: One button per unique profile URL (DOM-structure independent)
+    const seenUrls = new Set();
+    const seenCards = new Set();
+    const finalButtons = [];
+
+    for (const btn of buttons) {
+        // Primary dedup: profile URL (most reliable, structure-independent)
+        const url = getProfileUrl(btn);
+        if (url) {
+            if (seenUrls.has(url)) continue;
+            seenUrls.add(url);
+            finalButtons.push(btn);
+            continue;
+        }
+
+        // Fallback dedup: card DOM reference (for elements without a profile URL)
+        const card = findCard(btn);
+        if (card) {
+            if (seenCards.has(card)) continue;
+            seenCards.add(card);
+        }
+        finalButtons.push(btn);
+    }
+
+    return finalButtons;
 }
 
+// Structural heuristic: Find withdraw buttons by analyzing repeating patterns in the DOM
+function findWithdrawByStructure() {
+    // Look for all links that go to /in/ profiles (strong signal we're on the right page)
+    const profileLinks = Array.from(document.querySelectorAll('a[href*="/in/"]'));
+    if (profileLinks.length < 2) return []; // Not enough to detect a pattern
+
+    // Walk up from profile links to find the repeating container level
+    const cardCandidates = new Map(); // parent -> [children]
+    for (const link of profileLinks) {
+        const card = findCard(link);
+        if (card && card.parentElement) {
+            const parent = card.parentElement;
+            if (!cardCandidates.has(parent)) cardCandidates.set(parent, []);
+            if (!cardCandidates.get(parent).includes(card)) {
+                cardCandidates.get(parent).push(card);
+            }
+        }
+    }
+
+    // Find the parent with the most card-like children (the list container)
+    let bestParent = null;
+    let bestCount = 0;
+    for (const [parent, cards] of cardCandidates) {
+        if (cards.length > bestCount) {
+            bestCount = cards.length;
+            bestParent = parent;
+        }
+    }
+
+    if (!bestParent || bestCount < 3) return [];
+
+    // Within these cards, find elements that look like action buttons
+    const cards = cardCandidates.get(bestParent);
+    const withdrawButtons = [];
+    for (const card of cards) {
+        // Look for buttons/links with "Withdraw" text inside the card
+        const btns = Array.from(card.querySelectorAll('button, a')).filter(b => {
+            const text = (b.textContent || '').trim().toLowerCase();
+            return text === 'withdraw' || text.includes('withdraw');
+        });
+        if (btns.length > 0) withdrawButtons.push(btns[0]);
+    }
+
+    return withdrawButtons;
+}
+
+
 function getPersonName(button) {
-    const card = button.closest('[role="listitem"]');
+    const card = findCard(button);
     if (!card) return 'Unknown';
 
     const nameLink = card.querySelector('a.db828f0d[href*="/in/"]');
@@ -843,7 +1474,7 @@ function getPersonName(button) {
 
 // Get LinkedIn profile URL from connection card
 function getProfileUrl(button) {
-    const card = button.closest('[role="listitem"]');
+    const card = findCard(button);
     if (!card) return null;
 
     const link = card.querySelector('a[href*="/in/"]');
@@ -859,7 +1490,7 @@ function getProfileUrl(button) {
 }
 
 function getAge(button) {
-    const card = button.closest('[role="listitem"]');
+    const card = findCard(button);
     if (!card) return null;
 
     const text = (card.textContent || '').trim();
@@ -1377,7 +2008,7 @@ function hashMessage(text) {
 
 // Visual highlighting
 function highlightConnection(element, type) {
-    const card = element.closest('[role="listitem"]');
+    const card = findCard(element);
     if (!card) return;
 
     // Remove existing
@@ -1577,6 +2208,10 @@ async function scanConnections() {
                 people: []
             };
         }
+
+        // Deduplicate by personId to guard against DOM returning the same card twice
+        if (groups[hash].people.some(p => p.id === personId)) continue;
+
         groups[hash].count++;
         groups[hash].ages.push(ageText);
 
@@ -1742,26 +2377,32 @@ async function withdrawSelected(selectedHashes) {
             let confirmed = false;
 
             if (state.settings.debugMode) {
-                // Debug mode: Just highlight, don't click
+                // Debug mode: highlight then mark as processed, don't click or hide
                 const card = btn.closest('[role="listitem"]');
                 if (card) {
                     card.style.transition = 'background 0.3s, border 0.3s';
-                    card.style.backgroundColor = '#fff3cd';
+                    card.style.backgroundColor = '#fff3cd'; // Yellow: processing
                     card.style.border = '2px solid #ffc107';
                 }
+                btn.style.transition = 'all 0.3s';
                 btn.style.backgroundColor = '#ffc107';
                 btn.style.color = '#000';
                 btn.style.fontWeight = 'bold';
 
-                await wait(800);
+                await wait(1000);
                 confirmed = true;
 
-                // Hide the card after highlighting to simulate withdrawal
+                // Mark as processed (red/pink) -- same as count/age debug mode
                 if (card) {
-                    setTimeout(() => {
-                        card.style.display = 'none';
-                    }, 1000);
+                    card.classList.add('cc-processed');
+                    card.style.backgroundColor = '#fee2e2';
+                    card.style.border = '1px solid #e5e7eb';
+                    card.style.opacity = '0.6';
                 }
+                btn.classList.add('cc-processed');
+                btn.style.backgroundColor = '#ef4444';
+                btn.style.color = 'white';
+                btn.innerText = 'Debug Cleared';
             } else {
                 // Normal mode: Actually click
                 btn.click();
@@ -1803,9 +2444,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
         const newState = changes.extension_state.newValue;
         if (!newState) return;
 
-        // Sync settings
-        if (newState.settings) {
+        // Sync settings -- but only when NOT actively running to avoid
+        // overwriting runtime values (e.g. debugMode) set by a message handler
+        if (newState.settings && !state.isRunning) {
+            const wasDebug = state.settings.debugMode;
             state.settings = { ...state.settings, ...newState.settings };
+            Logger.DEBUG = state.settings.debugMode === true;
+            // If debug mode was just turned off, strip visual markers immediately
+            if (wasDebug && !state.settings.debugMode) clearDebugStyling();
             Logger.log('ClearConnect: Synced settings from storage');
         }
 

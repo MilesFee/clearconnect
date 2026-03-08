@@ -1561,10 +1561,62 @@ body {
     font-size: 11px;
 }
 
-#advanced-settings {
+/* Advanced Settings Toggle */
+.advanced-settings {
     margin-top: 12px;
     padding-top: 12px;
     border-top: 1px solid var(--border-default);
+}
+
+.advanced-toggle {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    margin-bottom: 4px;
+}
+
+/* Custom arrow */
+.advanced-toggle::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-right: 2px solid var(--text-secondary);
+    border-bottom: 2px solid var(--text-secondary);
+    transform: rotate(-45deg);
+    transition: transform 0.2s;
+}
+
+.advanced-settings[open]>.advanced-toggle::before {
+    transform: rotate(45deg);
+}
+
+/* Remove default marker in WebKit */
+.advanced-toggle::-webkit-details-marker {
+    display: none;
+}
+
+.advanced-toggle:hover {
+    color: var(--text-primary);
+}
+
+.advanced-toggle:hover::before {
+    border-color: var(--text-primary);
+}
+
+.advanced-settings>.setting-group {
+    margin-top: 12px;
+}
+
+.advanced-settings>.setting-group:last-child {
+    margin-bottom: 0;
 }
 
 /* Footer */
