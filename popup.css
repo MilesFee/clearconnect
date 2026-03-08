@@ -1846,8 +1846,57 @@ body {
     font-size: 12px;
 }
 
+/* --- Debug Menu Styles --- */
+.debug-menu {
+    background: var(--bg-surface);
+    border: 1px dashed var(--warning);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 16px;
+}
+
+.debug-menu-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--warning);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.debug-nav-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.debug-nav-btn {
+    background: var(--bg-card);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 11px;
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.2s ease;
+}
+
+.debug-nav-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--text-secondary);
+}
+
+.debug-nav-btn--full {
+    grid-column: span 2;
+}
+
+/* History Entry Profile Link in history view */
 .history-link {
-    color: var(--brand-primary);
+    color: var(--link-color);
     text-decoration: none;
     font-weight: 500;
     transition: opacity 0.2s;
