@@ -163,7 +163,7 @@ function getFooterStatusHTML(state) {
 
         return `
             <div class="status-box ${cssClass}">
-                <div class="status-icon-circle ${stopType === 'success' ? 'success' : stopType === 'manual' ? 'error' : 'warning'}">
+                <div class="status-icon-circle ${cssClass === 'status-success' ? 'success' : (cssClass === 'status-error' || cssClass === 'status-critical') ? 'error' : 'warning'}">
                     <div class="status-icon">${icon}</div>
                 </div>
                 <div class="status-content">
@@ -537,8 +537,6 @@ function updateHomeView(state) {
 
 
 async function renderUI(state) {
-    // 0. Shell & Footer Updates (Always safe)
-    // 0. Shell & Footer Updates (Always safe)
     renderShell(state);
 
     // NORMALIZE STATE: If in a view that Popup cannot show (side panel views), force Home context for Popup render
@@ -548,8 +546,26 @@ async function renderUI(state) {
         state = { ...state, uiNavigation: { ...state.uiNavigation, currentTab: 'home' } };
     }
 
+    const currentTab = state.uiNavigation?.currentTab || 'home';
+    const isRunning = state?.isRunning || false;
+
+    const footer = document.getElementById('footer');
     const footerStatus = document.getElementById('footer-status');
-    if (footerStatus) footerStatus.innerHTML = getFooterStatusHTML(state);
+    if (footerStatus && footer) {
+        if (currentTab === 'home' || isRunning) {
+            const statusHTML = getFooterStatusHTML(state);
+            footerStatus.innerHTML = statusHTML;
+            footer.style.display = statusHTML ? 'block' : 'none';
+        } else {
+            // Internal pages: Show "Done" button
+            footer.style.display = 'block';
+            footerStatus.innerHTML = `
+                <button data-action="go-home" class="secondary-btn" style="width:100%; height: 42px; font-size: 13px;">Done</button>
+            `;
+        }
+        // Body class for scroll context padding
+        document.body.classList.toggle('footer-pinned', footer.style.display === 'block');
+    }
 
     // 1. DOM References
     const resultsSection = document.getElementById('results-section');
@@ -564,8 +580,6 @@ async function renderUI(state) {
     // For now, let's assume we handle normal flow. If we need error views, we inject into homeSection.
 
     // 3. State-Based View Toggling
-    const isRunning = state.isRunning;
-    const currentTab = state.uiNavigation?.currentTab || 'home';
     const subMode = state.subMode;
 
     const processSection = document.getElementById('process-section');
@@ -608,17 +622,29 @@ async function renderUI(state) {
     }
 
     if (isRunning) {
-        // --- RUNNING STATE ---
+        // --- RUNNING STATE: Show blank state directing user to side panel ---
         hideAll();
         if (processSection) {
             processSection.classList.remove('hidden');
-            // Only inject HTML on first render; subsequent ticks use differential updates
-            const alreadyRendered = processSection.querySelector('#progress-layout-standard, #progress-layout-message');
+            const alreadyRendered = processSection.querySelector('#popup-running-state');
             if (!alreadyRendered) {
-                processSection.innerHTML = getProgressHTML(state);
+                processSection.innerHTML = `
+                    <div id="popup-running-state" class="popup-running-state">
+                        <div class="popup-running-icon">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <circle cx="12" cy="12" r="10"/>
+                                <polyline points="12 6 12 12 16 14"/>
+                            </svg>
+                        </div>
+                        <h2 class="popup-running-title">ClearConnect is Running</h2>
+                        <p class="popup-running-desc">All progress and controls are available in the side panel.</p>
+                        <div class="popup-running-actions">
+                            <button class="primary-btn" data-action="open-sidepanel">Open Side Panel</button>
+                            <button class="secondary-btn popup-close-btn" data-action="close-popup">Close This Window</button>
+                        </div>
+                    </div>
+                `;
             }
-            // Run incremental updates (progress bars, people list, buttons)
-            updateProgress(state);
         }
     }
     else {
@@ -808,7 +834,7 @@ function getHomeHTML(state) {
             <!-- By Age Input -->
             <div id="age-input" class="input-section" style="display: ${mode === 'age' ? 'block' : 'none'}">
                 <div class="input-row full-width">
-                    <input type="number" id="age-value" value="${localSettings.ageValue || 3}" min="1" max="365">
+                    <input type="number" id="age-value" value="${localSettings.ageValue || 3}" max="365">
                     <select id="age-unit">
                         <option value="day" ${localSettings.ageUnit === 'day' ? 'selected' : ''}>days</option>
                         <option value="week" ${localSettings.ageUnit === 'week' ? 'selected' : ''}>weeks</option>
@@ -1033,7 +1059,7 @@ function getSettingsHTML(state) {
                     </label>
                     
                     <div id="safe-threshold-group" class="inline-threshold" style="display: ${safeMode ? 'flex' : 'none'}">
-                        <input type="number" id="safe-threshold" value="${safeThreshold}" min="1" max="60" class="input-sm">
+                        <input type="number" id="safe-threshold" value="${safeThreshold}" max="60" class="input-sm">
                                     <select id="safe-unit" class="select-sm">
                                         <option value="day" ${safeUnit === 'day' ? 'selected' : ''}>Days</option>
                                         <option value="week" ${safeUnit === 'week' ? 'selected' : ''}>Weeks</option>
@@ -1044,53 +1070,59 @@ function getSettingsHTML(state) {
                 </div>
             </div>
 
-            <!-- Advanced Settings (hidden by default) -->
-            <details class="advanced-settings">
-                <summary class="advanced-toggle">Advanced</summary>
-
-                <!-- Debug Mode -->
-                <div class="setting-group">
-                    <div class="setting-option">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="debug-mode-toggle" ${debugMode ? 'checked' : ''}>
-                            <span class="option-text">
-                                <strong>Enable Debug Mode</strong>
-                                <small>Show detailed logs and keep window open.</small>
-                            </span>
-                        </label>
+            <!-- Advanced Settings (card accordion matching history style) -->
+            <div class="advanced-settings" id="advanced-settings-card">
+                <div class="advanced-settings-header" data-action="toggle-advanced">
+                    <div class="advanced-header-left">
+                        <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                        <span>Advanced</span>
                     </div>
                 </div>
+                <div class="advanced-settings-body" id="advanced-settings-body" style="display:none;">
+                    <!-- Debug Mode -->
+                    <div class="setting-group">
+                        <div class="setting-option">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="debug-mode-toggle" ${debugMode ? 'checked' : ''}>
+                                <span class="option-text">
+                                    <strong>Enable Debug Mode</strong>
+                                    <small>Show detailed logs and keep window open.</small>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
 
-                <!-- Layout Repair -->
-                <div class="setting-group">
-                    <div class="section-title" style="font-size: 12px; margin-bottom: 4px;">Layout Repair</div>
-                    <small class="setting-desc">If LinkedIn changed its layout and buttons can't be found, use this to re-teach the extension.</small>
-                    <div class="btn-row" style="margin-top: 8px; gap: 6px;">
-                        <button data-action="start-repair" class="secondary-btn" style="flex: 1; font-size: 12px;">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                            </svg>
-                            Repair Layout
-                        </button>
-                        <button data-action="reset-learned" class="secondary-btn" id="reset-learned-btn" style="flex: 1; font-size: 12px;" title="Clear learned selectors and use defaults">
-                            Reset to Default
-                        </button>
+                    <!-- Layout Repair -->
+                    <div class="setting-group">
+                        <div class="section-title" style="font-size: 12px; margin-bottom: 4px;">Layout Repair</div>
+                        <small class="setting-desc">If LinkedIn changed its layout and buttons can't be found, use this to re-teach the extension.</small>
+                        <div class="btn-row" style="margin-top: 8px; gap: 6px;">
+                            <button data-action="start-repair" class="secondary-btn" style="flex: 1; font-size: 12px;">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                                </svg>
+                                Repair Layout
+                            </button>
+                            <button data-action="reset-learned" class="secondary-btn" id="reset-learned-btn" style="flex: 1; font-size: 12px;" title="Clear learned selectors and use defaults">
+                                Reset to Default
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Copy Config -->
+                    <div class="setting-group">
+                        <div class="section-title" style="font-size: 12px; margin-bottom: 4px;">Export / Import Config</div>
+                        <small class="setting-desc">Copy learned selectors as JSON to share or back up.</small>
+                        <div class="btn-row" style="margin-top: 8px;">
+                            <button data-action="copy-config" class="secondary-btn" style="flex: 1; font-size: 12px;">Copy Config</button>
+                        </div>
                     </div>
                 </div>
-
-                <!-- Copy Config -->
-                <div class="setting-group">
-                    <div class="section-title" style="font-size: 12px; margin-bottom: 4px;">Export / Import Config</div>
-                    <small class="setting-desc">Copy learned selectors as JSON to share or back up.</small>
-                    <div class="btn-row" style="margin-top: 8px;">
-                        <button data-action="copy-config" class="secondary-btn" style="flex: 1; font-size: 12px;">Copy Config</button>
-                    </div>
-                </div>
-            </details>
-
-            <div class="btn-row" style="margin-top: 12px;">
-                <button data-action="go-home" class="primary-btn">Done</button>
             </div>
+
+            <!-- No Done button here - handled by pinned footer -->
         </div>
     `;
 }
@@ -1100,11 +1132,32 @@ function getSettingsHTML(state) {
 // --- SHARED TIME NORMALIZATION ---
 function normalizeTimeSettings(valueEl, unitEl) {
     if (!valueEl || !unitEl) return false;
-    let val = parseInt(valueEl.value, 10) || 1;
+    let val = parseInt(valueEl.value, 10);
+    if (isNaN(val)) val = 1;
     let unit = unitEl.value;
     let normalized = false;
 
-    if (unit === 'day') {
+    // Handle "Down" transition (value decreased to 0)
+    if (val < 1) {
+        if (unit === 'year') {
+            val = 11;
+            unit = 'month';
+            normalized = true;
+        } else if (unit === 'month') {
+            val = 3;
+            unit = 'week';
+            normalized = true;
+        } else if (unit === 'week') {
+            val = 6;
+            unit = 'day';
+            normalized = true;
+        } else {
+            val = 1; // Floor for 'day'
+            normalized = true;
+        }
+    } 
+    // Handle "Up" transition (value increased past certain limits)
+    else if (unit === 'day') {
         if (val >= 30) {
             val = Math.floor(val / 30);
             unit = 'month';
@@ -1164,7 +1217,14 @@ async function autoSaveSettings() {
     let ageValue = ageNorm ? ageNorm.val : (localSettings.ageValue || 3);
     let ageUnit = ageNorm ? ageNorm.unit : (localSettings.ageUnit || 'month');
 
-    let withdrawCount = withdrawCountEl ? (parseInt(withdrawCountEl.value, 10) || 10) : localSettings.withdrawCount;
+    let withdrawCount = localSettings.withdrawCount;
+    if (withdrawCountEl) {
+        withdrawCount = parseInt(withdrawCountEl.value, 10);
+        if (isNaN(withdrawCount) || withdrawCount < 1) {
+            withdrawCount = 1;
+            withdrawCountEl.value = withdrawCount;
+        }
+    }
 
     // 2. Immediate UI Updates (Bypass storage-render guard for responsiveness)
     const modeDesc = document.getElementById('mode-desc');
@@ -1319,7 +1379,7 @@ function getStatsHTML(state, livePendingCount = null) {
                 </div>
             </div>
 
-            <button data-action="go-home" class="secondary-btn" style="margin-top: 12px;">Back</button>
+            <!-- No Back button here - handled by pinned footer -->
         </div>
     `;
 }
@@ -1372,7 +1432,7 @@ function getHistoryHTML(state, withdrawalHistory = []) {
             <div id="history-content" class="history-content">
                 ${historyContent}
             </div>
-            <button data-action="go-home" class="secondary-btn">Back</button>
+            <!-- No Back button here - handled by pinned footer -->
         </div>
     `;
 }
@@ -1626,21 +1686,34 @@ async function handleAction(action, target) {
             break;
 
         case 'close-footer': {
-            // 1. Immediate visual update
-            const footer = document.querySelector('.footer');
-            if (footer) footer.style.display = 'none';
-
-            // 2. Safe save or local suppression
             const data = await chrome.storage.local.get('extension_state');
-            const state = data.extension_state || {};
+            const storedState = data.extension_state || {};
 
-            if (state.lastRunResult) {
+            if (storedState.lastRunResult && !storedState.lastRunResult.dismissed) {
+                // Persist dismissed state for run result notice
+                storedState.lastRunResult.dismissed = true;
                 await safeSaveState({ lastRunResult: { dismissed: true } });
+                // Re-render with updated state so footer reflects the change
+                renderUI(storedState);
             } else {
+                // "Correct page" notice: just hide visually for this session.
+                // Don't call renderUI — that would re-read localSettings from storage and undo our flag.
                 localSettings.hideReadyStatus = true;
+                const footer = document.getElementById('footer');
+                if (footer) footer.style.display = 'none';
+                document.body.classList.remove('footer-pinned');
             }
             break;
         }
+
+        case 'close-popup':
+            window.close();
+            break;
+
+        case 'open-sidepanel':
+            chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL', tabId: activeTabId }).catch(() => { });
+            window.close();
+            break;
 
         case 'withdraw-selected':
             if (!activeTabId || selectedScanHashes.size === 0) break;
@@ -1673,6 +1746,17 @@ async function handleAction(action, target) {
             break;
 
         // History session toggle
+        case 'toggle-advanced': {
+            const body = document.getElementById('advanced-settings-body');
+            const card = document.getElementById('advanced-settings-card');
+            if (body && card) {
+                const isOpen = body.style.display !== 'none';
+                body.style.display = isOpen ? 'none' : 'block';
+                card.classList.toggle('expanded', !isOpen);
+            }
+            break;
+        }
+
         case 'toggle-session':
             const session = target.closest('.history-session');
             if (session) {

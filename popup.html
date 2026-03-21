@@ -44,10 +44,10 @@
         </header>
 
         <!-- Process Section (Active Run) - content injected by getProgressHTML() -->
-        <div id="process-section" class="view-section hidden"></div>
+        <div id="process-section" class="view-section view-scroll-content hidden"></div>
 
         <!-- 3. Results Section (Fades In) -->
-        <div id="results-section" class="view-section hidden">
+        <div id="results-section" class="view-section view-scroll-content hidden">
             <!-- Stats Grid & History injected here or static? -->
             <!-- For now, we keep the dynamic injection for the INNER content of results, 
                       but the CONTAINER exists to fade in. -->
@@ -55,32 +55,33 @@
         </div>
 
         <!-- 4. Error Section (Transient) -->
-        <div id="error-section" class="view-section hidden"></div>
+        <div id="error-section" class="view-section view-scroll-content hidden"></div>
 
         <!-- 5. Home/Settings (Default) -->
-        <div id="home-section" class="view-section">
+        <div id="home-section" class="view-section view-scroll-content">
             <!-- Will be populated by initial render or simple visibility toggle if we move home HTML here too -->
         </div>
     </div>
 
-    <!-- Footer (static, not cleared on render) -->
+    <!-- Nav Footer (shown by JS: Done button or notices) -->
     <footer class="footer" id="footer">
         <!-- Dynamic Global Status (injected by renderUI) -->
         <div id="footer-status"></div>
-        <div id="footer-content" class="footer-msg">
-            <svg id="footer-icon-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2" style="display:none;">
-                <path d="M20 6L9 17l-5-5" />
-            </svg>
-            <svg id="footer-icon-error" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2" style="display:none;">
-                <circle cx="12" cy="12" r="10" />
-                <line x1="15" y1="9" x2="9" y2="15" />
-                <line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
-            <span id="footer-hint"></span>
-        </div>
     </footer>
+    <!-- Error / Toast Bar (always rendered, shown via JS) -->
+    <div id="footer-content" class="footer-msg">
+        <svg id="footer-icon-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" style="display:none;">
+            <path d="M20 6L9 17l-5-5" />
+        </svg>
+        <svg id="footer-icon-error" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" style="display:none;">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="15" y1="9" x2="9" y2="15" />
+            <line x1="9" y1="9" x2="15" y2="15" />
+        </svg>
+        <span id="footer-hint"></span>
+    </div>
     <script src="utils.js"></script>
     <script src="popup.js"></script>
 </body>
