@@ -318,13 +318,15 @@ function getProgressHTML(state) {
     }
 
     return `
-        <div class="view">
-            ${getSafeNoticeHTML(state)}
-            <h2 id="active-operation-title" class="section-title">${isScanning ? 'Scanning connections...' : 'Clearing connections...'}</h2>
-            ${layoutHTML}
-            <div id="progress-actions" class="progress-actions" style="display: flex; gap: 8px; margin-top: 12px;">
-                <button data-action="toggle-pause" class="secondary-btn" style="flex: 1; ${isWithdrawing ? '' : 'display:none;'}"><span class="btn-text">${isPaused ? 'Resume' : 'Pause'}</span></button>
-                <button data-action="stop-operation" class="secondary-btn" style="flex: 1;"><span class="btn-text">Stop</span></button>
+        <div class="view progress-view">
+            <div class="view-scroll-content">
+                ${getSafeNoticeHTML(state)}
+                <h2 id="active-operation-title" class="section-title">${isScanning ? 'Scanning connections...' : 'Clearing connections...'}</h2>
+                ${layoutHTML}
+            </div>
+            <div id="progress-actions" class="actions">
+                <button data-action="toggle-pause" class="secondary-btn" style="${isWithdrawing ? '' : 'display:none;'}"><span class="btn-text">${isPaused ? 'Resume' : 'Pause'}</span></button>
+                <button data-action="stop-operation" class="secondary-btn"><span class="btn-text">Stop</span></button>
             </div>
         </div>
     `;
@@ -334,11 +336,13 @@ function getProgressHTML(state) {
 function getScanResultsHTML() {
     return `
         <div class="view">
-            ${getSafeNoticeHTML()}
-            <h2 class="section-title">Scan Results</h2>
-            <p class="scan-desc">Select message groups to withdraw.</p>
-            <div id="scan-results-list" class="scan-results-list"></div>
-            <div id="empty-scan" class="empty-scan" style="display:none;">No message groups found.</div>
+            <div class="view-scroll-content">
+                ${getSafeNoticeHTML()}
+                <h2 class="section-title">Scan Results</h2>
+                <p class="scan-desc">Select message groups to withdraw.</p>
+                <div id="scan-results-list" class="scan-results-list"></div>
+                <div id="empty-scan" class="empty-scan" style="display:none;">No message groups found.</div>
+            </div>
             <div class="scan-actions">
                 <button data-action="withdraw-selected" id="withdraw-selected-btn" class="primary-btn" disabled>Withdraw Selected (<span id="selected-count">0</span>)</button>
                 <button data-action="cancel-scan" class="secondary-btn">Cancel</button>
@@ -650,11 +654,18 @@ function getCompletedHTML(state) {
                                 </div>
                             </label>
                         </div>
-
-                        <button data-action="start-continue" class="primary-btn" style="margin-top:16px;">Start Clearing</button>
                     </div>
+                ` : ''}
+            </div>
+
+            <!-- PINNED ACTIONS (Bottom of view) -->
+            <div class="actions">
+                ${state.currentMode === 'message' ? `
+                    <button data-action="resume-scan-results" class="primary-btn">Continue</button>
+                ` : `
+                    <button data-action="start-continue" class="primary-btn">Continue</button>
                 `}
-                <button data-action="done" class="secondary-btn" style="width:100%;">Return to Home</button>
+                <button data-action="done" class="secondary-btn">Home</button>
             </div>
         </div>
     `;
@@ -1143,6 +1154,65 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 });
 
+// ============ SHARED TIME NORMALIZATION ============
+function normalizeTimeSettings(valueEl, unitEl) {
+    if (!valueEl || !unitEl) return false;
+    let val = parseInt(valueEl.value, 10);
+    if (isNaN(val)) val = 1;
+    let unit = unitEl.value;
+    let normalized = false;
+
+    // Handle "Down" transition (value decreased to 0)
+    if (val < 1) {
+        if (unit === 'year') {
+            val = 11;
+            unit = 'month';
+            normalized = true;
+        } else if (unit === 'month') {
+            val = 3;
+            unit = 'week';
+            normalized = true;
+        } else if (unit === 'week') {
+            val = 6;
+            unit = 'day';
+            normalized = true;
+        } else {
+            val = 1; // Floor for 'day'
+            normalized = true;
+        }
+    } 
+    // Handle "Up" transition (value increased past certain limits)
+    else if (unit === 'day') {
+        if (val >= 30) {
+            val = Math.floor(val / 30);
+            unit = 'month';
+            normalized = true;
+        } else if (val >= 7 && val % 7 === 0) {
+            val = val / 7;
+            unit = 'week';
+            normalized = true;
+        }
+    } else if (unit === 'week') {
+        if (val >= 4) {
+            val = Math.floor(val / 4);
+            unit = 'month';
+            normalized = true;
+        }
+    } else if (unit === 'month') {
+        if (val >= 12 && val % 12 === 0) {
+            val = val / 12;
+            unit = 'year';
+            normalized = true;
+        }
+    }
+
+    if (normalized) {
+        valueEl.value = val;
+        unitEl.value = unit;
+    }
+    return { val, unit, normalized };
+}
+
 // ============ INITIALIZATION ============
 
 // Revert panel behavior when side panel is closed (user clicks X)
@@ -1152,6 +1222,42 @@ window.addEventListener('beforeunload', () => {
 
 document.addEventListener('DOMContentLoaded', async () => {
     setupEventDelegation();
+
+    // Setup input normalization for continue clearing (if present)
+    document.addEventListener('change', (e) => {
+        const target = e.target;
+        if (target.id === 'continue-age-value' || target.id === 'continue-age-unit') {
+            const valEl = document.getElementById('continue-age-value');
+            const unitEl = document.getElementById('continue-age-unit');
+            if (valEl && unitEl) normalizeTimeSettings(valEl, unitEl);
+        }
+        if (target.id === 'continue-count') {
+            let val = parseInt(target.value, 10);
+            if (isNaN(val) || val < 1) target.value = 1;
+        }
+    });
+
+    document.addEventListener('input', (e) => {
+        const target = e.target;
+        if (target.id === 'continue-age-value' || target.id === 'continue-age-unit' || target.id === 'continue-count') {
+            // Immediate check for illegal 0/neg while typing or spinning
+            let val = parseInt(target.value, 10);
+            
+            if (target.id === 'continue-age-value' || target.id === 'continue-age-unit') {
+                const valEl = document.getElementById('continue-age-value');
+                const unitEl = document.getElementById('continue-age-unit');
+                if (valEl && unitEl) {
+                    // Only normalize if val is 0 (down click) or if it's a multiple of 7/30/12 (up click)
+                    // This prevents jumping while typing numbers like "15"
+                    if (val < 1 || (val >= 7 && val % 7 === 0) || val >= 12) {
+                        normalizeTimeSettings(valEl, unitEl);
+                    }
+                }
+            } else if (target.id === 'continue-count') {
+                if (!isNaN(val) && val < 0) target.value = 0; // Allow 0 while typing but normalized on change
+            }
+        }
+    });
 
     // Load and render state first
     let extension_state;

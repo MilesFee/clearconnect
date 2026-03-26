@@ -18,16 +18,9 @@
             min-width: 300px;
             max-width: 420px;
             max-height: none;
-            overflow-y: auto;
+            overflow: hidden; /* Prevent double scrollbars; use .view-scroll-content instead */
             display: flex;
             flex-direction: column;
-        }
-
-        .app {
-            display: flex;
-            flex-direction: column;
-            flex: 1;
-            min-height: 0;
         }
     </style>
 </head>

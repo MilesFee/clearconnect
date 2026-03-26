@@ -47,6 +47,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
+    // Relay webhook from content script to Discord (avoids host_permissions for discord.com)
+    if (message.action === 'SEND_WEBHOOK') {
+        if (message.url && message.payload) {
+            fetch(message.url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(message.payload)
+            }).catch(() => { });
+        }
+        return; // Fire-and-forget, no response needed
+    }
+
     // On completion, revert panel behavior
     if (message.action === 'COMPLETE') {
         chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => { });
