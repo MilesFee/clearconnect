@@ -704,18 +704,40 @@ async function renderUI(state) {
                                         const results = await chrome.scripting.executeScript({
                                             target: { tabId: tab.id },
                                             func: () => {
-                                                const navBtn = document.querySelector('nav button[aria-current="true"]');
-                                                let text = navBtn ? navBtn.textContent : '';
-                                                let match = text.match(/People\s*\(([0-9,]+)\)/i);
-                                                if (match) return parseInt(match[1].replace(/,/g, ''), 10);
+                                            function getLinkedInTotalCount() {
+    // Search broadly for elements that might contain "People (X)"
+    // LinkedIn often puts these in header tabs, left-rail filters, or radio groups
+    const selectors = [
+        '[role="tab"]', 
+        '[role="radio"]', 
+        'nav button', 
+        'nav a', 
+        'label', 
+        'span',
+        'li'
+    ];
+    
+    const elements = document.querySelectorAll(selectors.join(','));
+    
+    for (const el of elements) {
+        // We look for text that strictly contains "People" followed by a number in parentheses or space
+        const text = (el.textContent || '').trim();
+        if (!text.includes('People')) continue;
 
-                                                const spans = document.querySelectorAll('nav span');
-                                                for (const span of spans) {
-                                                    text = span.textContent || '';
-                                                    match = text.match(/People\s*\(([0-9,]+)\)/i);
-                                                    if (match) return parseInt(match[1].replace(/,/g, ''), 10);
-                                                }
-                                                return null;
+        const match = text.match(/People\s*(?:\()?\s*([0-9,]+)\s*(?:\))?/i);
+        
+        if (match) {
+            const count = parseInt(match[1].replace(/,/g, ''), 10);
+            if (!isNaN(count) && count > 0) {
+                // Note: state and saveState are not available in the injected script's scope.
+                // This function should only return the count, and the calling context will handle state updates.
+                return count;
+            }
+        }
+    }
+    return null;
+}
+                                                return getLinkedInTotalCount();
                                             }
                                         });
                                         const count = results?.[0]?.result;
@@ -1291,13 +1313,13 @@ function getStatsHTML(state, livePendingCount = null) {
     let currentConnections = livePendingCount;
     let dataSource = 'Live';
 
-    if (currentConnections === null && stats.pendingInvitations != null) {
+    if ((currentConnections === null || isNaN(currentConnections)) && stats.pendingInvitations != null) {
         currentConnections = stats.pendingInvitations;
         dataSource = 'Stored';
     }
 
-    const hasData = currentConnections !== null && !isNaN(currentConnections);
-    const displayCurrent = hasData ? currentConnections : '---';
+    const hasData = currentConnections !== null && !isNaN(currentConnections) && currentConnections > 0;
+    const displayCurrent = hasData ? currentConnections.toLocaleString() : '---';
     const availableCapacity = hasData ? Math.max(0, maxCapacity - currentConnections) : '---';
     const capacityPercent = hasData ? Math.min(100, Math.round((currentConnections / maxCapacity) * 100)) : 0;
 

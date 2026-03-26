@@ -521,20 +521,22 @@ async function saveState() {
 
         // Merge our runtime state into storage state
         // We "own" isRunning, subMode, stats.processed, stats.alltimeCleared while running
-        const mergedState = {
-            ...currentState,
-            ...state,
-            stats: {
-                ...(currentState.stats || {}),
-                ...state.stats
-            },
-            settings: {
-                ...(currentState.settings || {}),
-                ...state.settings
+        // Helper for deep merging to avoid wiping storage
+        function mergeDeep(target, source) {
+            for (const key in source) {
+                if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+                    if (!target[key]) target[key] = {};
+                    mergeDeep(target[key], source[key]);
+                } else {
+                    target[key] = source[key];
+                }
             }
-        };
+        }
 
-        await chrome.storage.local.set({ extension_state: mergedState });
+        // Merge runtime state into store state
+        mergeDeep(currentState, state);
+
+        await chrome.storage.local.set({ extension_state: currentState });
     } catch (e) {
         Logger.error('ClearConnect: Failed to save state', e);
     }
@@ -677,7 +679,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.status.text = "Starting...";
         state.status.progress = 0;
         state.sessionLog = []; // Reset log on new run? Or keep? Reset for new run seems safer.
-        state.lastRunResult = null; // Clear previous run result when starting new run
 
         if (!isContinuation) {
             state.sessionCleared = []; // New session: Clear history
@@ -784,28 +785,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 function getLinkedInTotalCount() {
-    // Parse "People (1,100)" from the nav
-    const navBtn = document.querySelector('nav button[aria-current="true"]');
-    if (navBtn) {
-        const text = navBtn.textContent || '';
-        const match = text.match(/People\s*\(([0-9,]+)\)/i);
-        if (match) {
-            return parseInt(match[1].replace(/,/g, ''), 10);
-        }
-    }
-    // Also try span inside nav
-    const spans = document.querySelectorAll('nav span');
-    for (const span of spans) {
-        const text = span.textContent || '';
-        const match = text.match(/People\s*\(([0-9,]+)\)/i);
+    // Search broadly for elements that might contain "People (X)"
+    // LinkedIn often puts these in header tabs, left-rail filters, or radio groups
+    // Using a broad but specific selector set ensures we find it regardless of the container
+    const selectors = [
+        '[role="tab"]', 
+        '[role="radio"]', 
+        'nav button', 
+        'nav a', 
+        'label', 
+        'span'
+    ];
+    
+    // We want to favor elements that look like navigation/filter components
+    const elements = document.querySelectorAll(selectors.join(','));
+    
+    for (const el of elements) {
+        const text = (el.textContent || '').trim();
+        // Regex handles "People (905)", "People 905", "People (1,100)"
+        const match = text.match(/People\s*(?:\(?)\s*([0-9,]+)\s*(?:\)?)/i);
+        
         if (match) {
             const count = parseInt(match[1].replace(/,/g, ''), 10);
-            if (state.stats.pendingInvitations !== count) {
-                state.stats.pendingInvitations = count;
-                state.stats.pendingUpdatedAt = Date.now();
-                saveState();
+            if (!isNaN(count)) {
+                // Sync state if it changed significantly (prevents excessive saves)
+                // If isRunning, we update stats.remaining too
+                if (state.stats.pendingInvitations !== count) {
+                    state.stats.pendingInvitations = count;
+                    state.stats.pendingUpdatedAt = Date.now();
+                    saveState();
+                }
+                return count;
             }
-            return count;
         }
     }
     return null;
@@ -1763,8 +1774,9 @@ function complete(message, extraStats = {}, stopType = 'success') {
 
     // Update final stats
     state.stats.remaining = remaining;
-    if (extraStats.oldestRemaining) {
-        state.stats.oldestRemaining = extraStats.oldestRemaining; // Add to state if needed
+    if (linkedInCount !== null) {
+        state.stats.pendingInvitations = linkedInCount;
+        state.stats.pendingUpdatedAt = Date.now();
     }
 
     state.status.text = message || `Done! Cleared ${state.stats.processed}.`;
