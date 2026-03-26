@@ -17,10 +17,6 @@ ClearConnect is a powerful Chrome extension that helps you manage your "Sent" in
 *   **Debug Mode:** Test filters and settings safely without executing withdrawals.
 *   **Privacy Focused:** Runs entirely locally in your browser. No data collection.
 
-## 📸 Screenshots
-
-*(coming never maybe)*
-
 ## 📦 Installation
 
 ### For Users (Easy Way)
