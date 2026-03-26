@@ -1,11 +1,12 @@
-name: Release Extension
+name: Build and Release Extension
 
 on:
-  release:
-    types: [created]
+  push:
+    branches:
+      - main
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -14,29 +15,47 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Get version from manifest.json
+      id: get_version
+      run: |
+        VERSION=$(node -p "require('./manifest.json').version")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
     - name: Create extension zip
       run: |
-        mkdir dist
-        # Create a clean directory for the extension files
-        mkdir clearconnect-extension
-        
-        # Copy core extension files
-        cp manifest.json clearconnect-extension/
-        cp background.js content.js popup.js sidepanel.js utils.js clearconnect-extension/
-        cp popup.html sidepanel.html clearconnect-extension/
-        cp popup.css clearconnect-extension/
-        
-        # Copy assets
-        cp -r icons clearconnect-extension/
-        
-        # Copy documentation
-        cp LICENSE README.md CONTRIBUTING.md clearconnect-extension/
-        
-        # Zip the directory
-        # Usage of ${GITHUB_REF_NAME} allows using the tag name (e.g., v2.5.0) in the zip file
-        zip -r dist/clearconnect-${{ github.ref_name }}.zip clearconnect-extension
-        
-    - name: Upload Release Asset
+        mkdir -p dist
+        # Create a clean zip directly from selected files to avoid bloat
+        # Excludes: .git, .github, .agent, .gitignore, tests, etc.
+        zip -r dist/clearconnect-${{ steps.get_version.outputs.tag }}.zip \
+          manifest.json \
+          background.js \
+          content.js \
+          popup.js \
+          sidepanel.js \
+          utils.js \
+          popup.html \
+          sidepanel.html \
+          popup.css \
+          icons/ \
+          LICENSE \
+          README.md \
+          CONTRIBUTING.md
+
+    - name: Create Release
+      id: create_release
       uses: softprops/action-gh-release@v1
       with:
-        files: dist/clearconnect-${{ github.ref_name }}.zip
+        tag_name: ${{ steps.get_version.outputs.tag }}
+        name: Release ${{ steps.get_version.outputs.tag }}
+        body: |
+          # ClearConnect ${{ steps.get_version.outputs.tag }}
+          
+          Release v${{ steps.get_version.outputs.version }} with enhanced statistics and persistence.
+          
+          See RELEASE_NOTES.md (if available) or the project dashboard for detailed changes.
+        draft: false
+        prerelease: false
+        files: dist/clearconnect-${{ steps.get_version.outputs.tag }}.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
