@@ -638,8 +638,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // Batch Start Logic: Track where this new run begins relative to history
         // If continuing, we want to slice the queue from here.
-        // Batch Start Logic: Track where this new run begins relative to history
-        // If continuing, we want to slice the queue from here.
         state.batchStart = state.stats.processed || 0;
 
         // CRITICAL FIX: clear pending items from previous run to force fresh scan
@@ -2142,7 +2140,15 @@ async function scanConnections() {
             if (fuzzyStop) {
                 Logger.log('ClearConnect: Reached total count (fuzzy), stopping.');
                 break;
-            } else if (noChangeCount >= 2) {
+            }
+
+            // NEW: Early exit if we are at the bottom and nothing changed after 1 attempt
+            if (noChangeCount >= 1 && isAtScrollBottom()) {
+                Logger.log('ClearConnect: Reached scroll bottom with no growth, stopping.');
+                break;
+            }
+
+            if (noChangeCount >= 2) {
                 Logger.log('ClearConnect: Scanning stuck, checking for Load More button...');
                 const clicked = await clickLoadMoreButton();
                 if (clicked) {
