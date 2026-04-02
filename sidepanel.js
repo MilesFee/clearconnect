@@ -554,7 +554,7 @@ function getCompletedHTML(state) {
 
     return `
         <div id="completed-view" class="view">
-            <div class="scrollable-view-content">
+            <div class="view-scroll-content">
                 ${getSafeNoticeHTML(state)}
                 <!-- Summary Card -->
                 <div class="summary-card" style="background:var(--bg-card); border:1px solid var(--border-default); border-radius:12px; padding:20px; text-align:center; margin-bottom:20px; box-shadow:var(--shadow-sm);">
@@ -613,13 +613,9 @@ function getCompletedHTML(state) {
                 </div>
             </div>
 
-            <!-- ACTIONS / BUTTONS (Pinned to bottom) -->
+                <!-- ACTIONS / BUTTONS (Pinned to bottom) -->
             <div class="actions actions-fixed" style="display:flex; flex-direction:column; gap:12px;">
-                ${state.currentMode === 'message' ? `
-                    <div id="clear-more-container" style="width:100%;">
-                        <button data-action="resume-scan-results" class="primary-btn" style="width:100%;">Select More Groups</button>
-                    </div>
-                ` : `
+                ${state.currentMode === 'message' ? '' : `
                     <div class="continue-section" id="continue-section" style="width:100%; border-top:none; padding-top:0; margin-top:0;">
                         <div class="continue-label" style="font-size:13px; font-weight:600; color:var(--text-primary); margin-bottom:12px; text-align:left;">Continue Clearing</div>
                         
@@ -655,13 +651,13 @@ function getCompletedHTML(state) {
                             </label>
                         </div>
                     </div>
-                ` : ''}
+                `}
             </div>
 
             <!-- PINNED ACTIONS (Bottom of view) -->
             <div class="actions">
                 ${state.currentMode === 'message' ? `
-                    <button data-action="resume-scan-results" class="primary-btn">Continue</button>
+                    <button data-action="resume-scan-results" class="primary-btn">Select More Groups</button>
                 ` : `
                     <button data-action="start-continue" class="primary-btn">Continue</button>
                 `}
@@ -710,18 +706,19 @@ function renderUI(state) {
         }
     } else if (currentTab === 'completed') {
         content.innerHTML = getCompletedHTML(state);
-        if (footerStatus) footerStatus.innerHTML = ''; // Clear it just in case, or remove this line entirely.
-        // I will remove the line entirely as per plan, but since I'm replacing lines 477-479 I'll just omit it.
-
+        // Revert panel behavior so clicking icon opens popup next time
+        chrome.runtime.sendMessage({ action: 'CLOSE_SIDEPANEL' }).catch(() => { });
         lastRenderedTab = 'completed';
         lastRenderedSubMode = null;
     } else {
         // Not in an active state -- show waiting with Open Popup button
         content.innerHTML = `
-            <div class="view" style="text-align:center; padding:40px 20px;">
-                <p style="color:var(--text-secondary); font-size:14px;">Waiting for operation to start...</p>
-                <p style="color:var(--text-disabled); font-size:12px; margin-top:8px;">Start a scan or clearing operation from the popup.</p>
-                <button data-action="open-popup" class="secondary-btn" style="margin-top:16px;">Open Popup</button>
+            <div class="view" style="text-align:center;">
+                <div class="view-scroll-content" style="padding:40px 20px;">
+                    <p style="color:var(--text-secondary); font-size:14px;">Waiting for operation to start...</p>
+                    <p style="color:var(--text-disabled); font-size:12px; margin-top:8px;">Start a scan or clearing operation from the popup.</p>
+                    <button data-action="open-popup" class="secondary-btn" style="margin-top:16px;">Open Popup</button>
+                </div>
             </div>
         `;
         // Revert panel behavior so clicking icon opens popup
