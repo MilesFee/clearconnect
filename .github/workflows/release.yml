@@ -73,6 +73,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Dependencies
+        working-directory: backend-selectors
+        run: npm install
+
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
