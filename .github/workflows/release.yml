@@ -43,18 +43,23 @@ jobs:
           README.md \
           CONTRIBUTING.md
 
+    - name: Extract Release Notes
+      id: extract_notes
+      run: |
+        # Extract the top section of RELEASE_NOTES.md (current version)
+        NOTES=$(awk '/^## Version/{if(p) exit; p=1} p {if(/^---/) exit; print}' RELEASE_NOTES.md)
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "notes<<$EOF" >> $GITHUB_OUTPUT
+        echo "$NOTES" >> $GITHUB_OUTPUT
+        echo "$EOF" >> $GITHUB_OUTPUT
+
     - name: Create Release
       id: create_release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ steps.get_version.outputs.tag }}
         name: Release ${{ steps.get_version.outputs.tag }}
-        body: |
-          # ClearConnect ${{ steps.get_version.outputs.tag }}
-          
-          Release v${{ steps.get_version.outputs.version }} with enhanced statistics and persistence.
-          
-          See RELEASE_NOTES.md (if available) or the project dashboard for detailed changes.
+        body: ${{ steps.extract_notes.outputs.notes }}
         draft: false
         prerelease: false
         files: dist/clearconnect-${{ steps.get_version.outputs.tag }}.zip
