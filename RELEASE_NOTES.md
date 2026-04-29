@@ -1,5 +1,18 @@
 # ClearConnect Release Notes
 
+## Version 2.5.1 - Stability & CI Update 🛠️
+
+This patch resolves critical issues with the dynamic selector management system and improves our continuous integration pipeline.
+
+### 🐛 1. Dynamic Selector Fixes
+- **Message Scanner Resilience**: Fixed a bug where the "Message Mode" scanner ignored user-trained custom selectors for message extraction. The scanner will now reliably detect and group messages even when LinkedIn alters their connection card UI.
+- **Improved Fail-safes**: Corrected the fallback logic so that if custom selectors are present, they are strictly prioritized over legacy `data-testid` attributes.
+
+### ⚙️ 2. Deployment Pipeline Enhancements
+- **Separated Workflows**: GitHub Actions has been updated to independently package the Chrome Extension and deploy the backend Cloudflare Worker, preventing monolithic build failures.
+
+---
+
 ## Version 2.5.0 - The Evolution Update 🚀
 
 This version marks a significant milestone in ClearConnect's journey, transforming from a simple MVP into a robust, high-performance tool for LinkedIn connection management.
