@@ -1,4 +1,4 @@
-name: Build and Release Extension
+name: Build and Release
 
 on:
   push:
@@ -6,7 +6,8 @@ on:
       - main
 
 jobs:
-  release:
+  release-extension:
+    name: Package and Release Extension
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -59,3 +60,18 @@ jobs:
         files: dist/clearconnect-${{ steps.get_version.outputs.tag }}.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-worker:
+    name: Deploy Cloudflare Worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+          workingDirectory: backend-selectors
