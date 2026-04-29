@@ -22,6 +22,96 @@
             display: flex;
             flex-direction: column;
         }
+
+        /* ---- Error Banner ---- */
+        #error-banner {
+            display: none;
+            flex-shrink: 0;
+            padding: 0 12px 0 12px;
+            z-index: 100;
+        }
+        #error-banner.visible {
+            display: block;
+            animation: bannerSlideIn 0.25s ease;
+        }
+        @keyframes bannerSlideIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .error-banner-box {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 10px 12px;
+            padding-right: 32px;
+            border-radius: 8px;
+            font-size: 12.5px;
+            line-height: 1.45;
+            position: relative;
+            border: 1px solid transparent;
+        }
+        .error-banner-box.severity-error {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: #ef4444;
+        }
+        .error-banner-box.severity-warning {
+            background: var(--warning-bg, #fff7ed);
+            border-color: var(--warning, #f97316);
+        }
+        .error-banner-icon {
+            font-size: 16px;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+        .severity-error .error-banner-icon { color: #ef4444; }
+        .severity-warning .error-banner-icon { color: var(--warning, #f97316); }
+        .error-banner-body { flex: 1; min-width: 0; }
+        .error-banner-title {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 2px;
+        }
+        .severity-error .error-banner-title { color: #ef4444; }
+        .severity-warning .error-banner-title { color: var(--warning, #f97316); }
+        .error-banner-detail {
+            color: var(--text-secondary, #6b7280);
+            font-size: 11.5px;
+        }
+        .error-banner-action {
+            display: inline-block;
+            margin-top: 6px;
+            padding: 4px 10px;
+            border-radius: 5px;
+            border: none;
+            font-size: 11.5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+        .error-banner-action:hover { opacity: 0.85; }
+        .severity-error .error-banner-action {
+            background: #ef4444;
+            color: #fff;
+        }
+        .severity-warning .error-banner-action {
+            background: var(--warning, #f97316);
+            color: #fff;
+        }
+        .error-banner-close {
+            position: absolute;
+            right: 8px;
+            top: 8px;
+            background: none;
+            border: none;
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+            color: var(--text-secondary, #9ca3af);
+            padding: 2px 4px;
+            border-radius: 3px;
+            opacity: 0.7;
+        }
+        .error-banner-close:hover { opacity: 1; }
     </style>
 </head>
 
@@ -38,6 +128,9 @@
                 <span>ClearConnect</span>
             </a>
         </header>
+
+        <!-- Error / stale-selector banner (shown on detection failures) -->
+        <div id="error-banner"></div>
 
         <!-- Active content injected here -->
         <div id="sidepanel-content" class="view-section"></div>

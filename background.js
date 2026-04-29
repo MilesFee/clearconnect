@@ -76,3 +76,34 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         });
     }
 });
+
+// ============ CLOUD SELECTOR SYNC ============
+// Update this URL once your worker is deployed!
+const SELECTORS_ENDPOINT = 'https://clearconnect-selectors.milesfee.workers.dev/';
+
+async function syncCloudSelectors() {
+    try {
+        const response = await fetch(SELECTORS_ENDPOINT, { cache: 'no-store' });
+        if (response.ok) {
+            const data = await response.json();
+            if (data && Object.keys(data).length > 0) {
+                await chrome.storage.local.set({ cloud_selectors: data });
+                Logger.log('ClearConnect: Synced cloud selectors successfully.');
+            }
+        }
+    } catch (e) {
+        Logger.error('ClearConnect: Failed to sync cloud selectors', e);
+    }
+}
+
+// Sync on startup / install
+chrome.runtime.onStartup.addListener(syncCloudSelectors);
+chrome.runtime.onInstalled.addListener(syncCloudSelectors);
+
+// Set alarm to sync periodically (every 12 hours)
+chrome.alarms.create('sync_selectors', { periodInMinutes: 720 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'sync_selectors') {
+        syncCloudSelectors();
+    }
+});

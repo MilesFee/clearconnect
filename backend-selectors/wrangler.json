@@ -1,0 +1,11 @@
+{
+  "name": "clearconnect-selectors",
+  "main": "src/index.js",
+  "compatibility_date": "2024-03-20",
+  "kv_namespaces": [
+    {
+      "binding": "SELECTORS_KV",
+      "id": "REDACTED_KV_NAMESPACE_ID"
+    }
+  ]
+}

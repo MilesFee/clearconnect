@@ -27,3 +27,5 @@ coverage/
 # OS
 *.crx
 *.pem
+
+references/
