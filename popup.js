@@ -669,7 +669,10 @@ async function renderUI(state) {
                 // Inject content
                 if (currentTab === 'settings') {
                     homeSection.innerHTML = getSettingsHTML(state);
-                    requestAnimationFrame(updateThemeView);
+                    requestAnimationFrame(() => {
+                        if (typeof updateThemeView === 'function') updateThemeView();
+                        updateSelectorStatus();
+                    });
                 } else if (currentTab === 'history') {
                     // Async History
                     chrome.storage.local.get('withdrawalHistory').then(({ withdrawalHistory }) => {
@@ -1025,7 +1028,33 @@ function getProgressHTML(state) {
 }
 
 
+function updateSelectorStatus() {
+    const valEl = document.getElementById('selector-source-value');
+    const timeEl = document.getElementById('selector-sync-time');
+    if (!valEl || !timeEl) return;
 
+    chrome.storage.local.get(['cloud_selectors', 'learned_selectors', 'last_sync_time'], (data) => {
+        let sourceText = "Hardcoded Defaults";
+        let sourceColor = "var(--text-secondary)";
+        
+        if (data.learned_selectors && Object.keys(data.learned_selectors).length > 0) {
+            sourceText = "User Learned (Active)";
+            sourceColor = "var(--success, #4ade80)";
+        } else if (data.cloud_selectors && Object.keys(data.cloud_selectors).length > 0) {
+            sourceText = "Server Hosted";
+            sourceColor = "var(--info, #38bdf8)";
+        }
+
+        let syncText = "Never";
+        if (data.last_sync_time) {
+            syncText = new Date(data.last_sync_time).toLocaleString();
+        }
+
+        valEl.textContent = sourceText;
+        valEl.style.color = sourceColor;
+        timeEl.textContent = `Last synced: ${syncText}`;
+    });
+}
 
 // HTML Generator: Settings View
 function getSettingsHTML(state) {
@@ -1113,6 +1142,18 @@ function getSettingsHTML(state) {
                                     <small>Show detailed logs and keep window open.</small>
                                 </span>
                             </label>
+                        </div>
+                    </div>
+
+                    <!-- Selector Status -->
+                    <div class="setting-group">
+                        <div class="section-title" style="font-size: 12px; margin-bottom: 4px;">Selector Source</div>
+                        <div style="font-size: 11px; margin-bottom: 4px; color: var(--text-secondary);">
+                            Status: <span id="selector-source-value">Loading...</span><br>
+                            <span id="selector-sync-time">Last synced: Unknown</span>
+                        </div>
+                        <div class="btn-row" style="margin-top: 8px;">
+                            <button data-action="sync-server-selectors" class="secondary-btn" style="flex: 1; font-size: 12px;">Fetch From Server</button>
                         </div>
                     </div>
 
@@ -1636,6 +1677,26 @@ async function handleAction(action, target) {
         case 'resume-scan-results':
             navigateTo('scanResults');
             break;
+        case 'sync-server-selectors':
+            target.textContent = 'Fetching...';
+            target.disabled = true;
+            chrome.runtime.sendMessage({ action: 'SYNC_SELECTORS' }, (response) => {
+                if (response && response.success) {
+                    target.textContent = 'Fetched!';
+                    target.style.backgroundColor = 'var(--success, #4ade80)';
+                } else {
+                    target.textContent = 'Fetch Failed';
+                    target.style.backgroundColor = 'var(--status-error, #dc2828)';
+                }
+                
+                setTimeout(() => {
+                    target.textContent = 'Fetch From Server';
+                    target.style.backgroundColor = '';
+                    target.disabled = false;
+                    if (typeof updateSelectorStatus === 'function') updateSelectorStatus();
+                }, 2000);
+            });
+            break;
 
         // Mode switching
         case 'set-mode':
@@ -1812,7 +1873,7 @@ async function handleAction(action, target) {
             if (activeTabId) {
                 try {
                     await chrome.tabs.sendMessage(activeTabId, { action: 'START_LEARNING' });
-                    showFooterError('Learning Mode started. Switch to the LinkedIn tab.');
+                    window.close();
                 } catch (e) {
                     showFooterError('Could not reach the LinkedIn page. Make sure you are on the Sent Invitations page.');
                 }
@@ -1827,7 +1888,8 @@ async function handleAction(action, target) {
                 } catch (e) { /* Content script may not be active */ }
             }
             await chrome.storage.local.remove('learned_selectors');
-            showFooterError('Learned selectors reset to defaults.');
+            showFooterError('Learned selectors reset. Falling back to server/defaults.');
+            if (typeof updateSelectorStatus === 'function') updateSelectorStatus();
             break;
 
         // Copy Config (learned selectors as JSON)
@@ -1839,6 +1901,7 @@ async function handleAction(action, target) {
                     showFooterError('No learned selectors to copy.');
                     break;
                 }
+                
                 await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
                 showFooterError('Config copied to clipboard.');
             } catch (e) {

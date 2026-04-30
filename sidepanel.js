@@ -275,7 +275,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
         // Trigger re-render if any core UI state or safety settings changed
         if (needsReRender) {
             chrome.storage.local.get('extension_state').then(({ extension_state }) => {
-                if (extension_state) renderUI(extension_state);
+                if (extension_state) {
+                    // Prevent a content.js saveState() from clobbering the scan results view.
+                    // Once we've rendered scanResults, keep it until the user explicitly navigates away.
+                    if (lastRenderedTab === 'scanResults' && !extension_state.isRunning) {
+                        extension_state.uiNavigation = extension_state.uiNavigation || {};
+                        extension_state.uiNavigation.currentTab = 'scanResults';
+                    }
+                    renderUI(extension_state);
+                }
             });
         }
     }
@@ -1161,10 +1169,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         selectedScanHashes.clear();
         chrome.storage.local.set({ savedScanResults: foundScanResults });
 
-        // Navigate to scan results safely
-        safeSaveState({ uiNavigation: { currentTab: 'scanResults' } }).then(state => {
-            renderUI(state);
-        });
+        // Render immediately from in-memory results — no async storage round-trip needed.
+        const content = document.getElementById('sidepanel-content');
+        if (content) {
+            content.innerHTML = getScanResultsHTML();
+            renderScanResults(foundScanResults);
+            lastRenderedTab = 'scanResults';
+            lastRenderedSubMode = null;
+        }
+
+        // Persist nav state in background so reopening the panel shows scan results.
+        safeSaveState({ uiNavigation: { currentTab: 'scanResults' } });
     }
 
     // Real-time scroll progress

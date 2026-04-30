@@ -59,9 +59,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return; // Fire-and-forget, no response needed
     }
 
-    // On completion, revert panel behavior
     if (message.action === 'COMPLETE') {
         chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => { });
+    }
+
+    if (message.action === 'SYNC_SELECTORS') {
+        syncCloudSelectors().then((result) => sendResponse(result));
+        return true;
     }
 });
 
@@ -87,12 +91,15 @@ async function syncCloudSelectors() {
         if (response.ok) {
             const data = await response.json();
             if (data && Object.keys(data).length > 0) {
-                await chrome.storage.local.set({ cloud_selectors: data });
+                await chrome.storage.local.set({ cloud_selectors: data, last_sync_time: Date.now() });
                 Logger.log('ClearConnect: Synced cloud selectors successfully.');
+                return { success: true };
             }
         }
+        return { success: false, error: 'Empty or invalid response' };
     } catch (e) {
         Logger.error('ClearConnect: Failed to sync cloud selectors', e);
+        return { success: false, error: e.message };
     }
 }
 
