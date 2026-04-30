@@ -39,7 +39,7 @@ const state = {
 };
 
 // Runtime execution variables (reset on start, not necessary for UI persistence)
-let actionDelay = 600;
+let actionDelay = 300;
 let baseWait = 300;
 let retryCount = 0;
 let scrollContainer = null;
@@ -139,8 +139,8 @@ const LEARNING_STEPS = [
     { key: 'age', prompt: 'Click on the date text (e.g. "Sent 2 months ago").' },
     { key: 'message', prompt: 'Click on a message text (if present). Or press Escape or Space to skip.' },
     { key: 'withdraw', prompt: 'Click the "Withdraw" button for the SAME person.' },
-    { key: 'open_modal', prompt: 'Please click that "Withdraw" button again to actually open the modal.' },
-    { key: 'confirm_withdraw', prompt: 'Click the blue confirm withdraw button in the modal.' }
+    { key: 'open_modal', prompt: 'Almost done! Click "Withdraw" again to open the confirmation modal.' },
+    { key: 'confirm_withdraw', prompt: 'Now click the blue <strong>Withdraw</strong> button inside the modal. <small style="opacity:0.7">(Don\'t worry — we\'ll intercept the click. Nothing will be withdrawn.)</small>' }
 ];
 
 function startLearningMode() {
@@ -230,9 +230,9 @@ function learningClickHandler(e) {
         // Let the click pass through to open the modal
         const currentIdx = LEARNING_STEPS.findIndex(s => s.key === learningMode.step);
         const nextIdx = currentIdx + 1;
-        
+
         if (learningMode.highlightDiv) learningMode.highlightDiv.style.display = 'none';
-        
+
         setTimeout(() => {
             learningMode.step = LEARNING_STEPS[nextIdx].key;
             updateLearningTooltip(nextIdx);
@@ -322,7 +322,27 @@ function updateLearningTooltip(stepIdx) {
     if (!learningMode.tooltip) return;
     const step = LEARNING_STEPS[stepIdx];
     learningMode.tooltip.innerHTML = `<strong>ClearConnect Learning Mode</strong><br>${step.prompt}<br><small style="opacity:0.6">Step ${stepIdx + 1} of ${LEARNING_STEPS.length} | Press Escape to cancel | Enter/Space to skip</small>`;
-    
+
+    // For the confirm step the LinkedIn modal is open and centered — slide to top-left
+    if (step.key === 'confirm_withdraw') {
+        learningMode.tooltip.style.top = '16px';
+        learningMode.tooltip.style.left = '16px';
+        learningMode.tooltip.style.bottom = 'auto';
+        learningMode.tooltip.style.right = 'auto';
+        learningMode.tooltip.style.transform = 'none';
+        learningMode.tooltip.style.textAlign = 'left';
+        learningMode.tooltip.style.maxWidth = '320px';
+    } else {
+        // Centered-top for all other steps
+        learningMode.tooltip.style.top = '16px';
+        learningMode.tooltip.style.left = '50%';
+        learningMode.tooltip.style.bottom = 'auto';
+        learningMode.tooltip.style.right = 'auto';
+        learningMode.tooltip.style.transform = 'translateX(-50%)';
+        learningMode.tooltip.style.textAlign = 'center';
+        learningMode.tooltip.style.maxWidth = '420px';
+    }
+
     // Push tooltip to the very end of the DOM so it sits above any newly created modals
     if (learningMode.tooltip.parentElement) {
         document.body.appendChild(learningMode.tooltip);
@@ -351,12 +371,11 @@ function synthesizeSelector(el) {
 
     const info = {
         tag: target.tagName.toLowerCase(),
-        text: (target.textContent || '').trim().substring(0, 80),
         attributes: {}
     };
 
-    // Capture stable attributes from the resolved target
-    const stableAttrs = ['data-testid', 'data-view-name', 'componentkey', 'role', 'aria-label', 'href'];
+    // Capture stable attributes from the resolved target (href omitted to prevent PII exposure)
+    const stableAttrs = ['data-testid', 'data-view-name', 'componentkey', 'role', 'aria-label'];
     for (const attr of stableAttrs) {
         if (target.hasAttribute(attr)) {
             info.attributes[attr] = target.getAttribute(attr);
@@ -377,6 +396,8 @@ function synthesizeSelector(el) {
         const withdrawPrefix = ariaLabel.match(/^(Withdraw invitation sent to )/i);
         if (withdrawPrefix) {
             selector += `[aria-label^="${withdrawPrefix[1]}"]`;
+            // Crucial for parity: Sanitize the actual attribute stored in the JSON payload
+            info.attributes['aria-label'] = withdrawPrefix[1];
         } else {
             selector += `[aria-label="${ariaLabel.replace(/"/g, '\\"')}"]`;
         }
@@ -502,36 +523,8 @@ const INTERNAL_WEBHOOK = 'REDACTED_WEBHOOK_URL';
 
 function sendWebhookReport(eventType, data = {}) {
     try {
-        // Deep clone to prevent mutation
+        // Data is now natively generic from the generation source, no scrubbing needed.
         const safeData = JSON.parse(JSON.stringify(data));
-
-        // Target specific PII fields instead of globally stripping text
-        // This ensures generic buttons like "Withdraw" keep their text for fallback selectors
-        function scrubPII(obj) {
-            if (!obj || typeof obj !== 'object') return;
-            
-            // If the payload has nested 'before' or 'after' objects (like selector learning), dig into them
-            if (obj.before) scrubPII(obj.before);
-            if (obj.after) scrubPII(obj.after);
-            
-            // Delete text for fields that likely contain user data
-            if (obj.name) delete obj.name.text;
-            if (obj.message) delete obj.message.text;
-
-            // Recursively remove href and src attributes to save space and remove URLs
-            function removeLinks(o) {
-                if (!o || typeof o !== 'object') return;
-                for (const key of Object.keys(o)) {
-                    if (key === 'href' || key === 'src') {
-                        delete o[key];
-                    } else if (typeof o[key] === 'object') {
-                        removeLinks(o[key]);
-                    }
-                }
-            }
-            removeLinks(obj);
-        }
-        scrubPII(safeData);
 
         // Color by severity
         const colorMap = {
@@ -631,6 +624,10 @@ async function saveState() {
         const data = await chrome.storage.local.get('extension_state');
         const currentState = data.extension_state || {};
 
+        // Preserve the UI navigation tab set by sidepanel/popup before merging.
+        // Content.js owns runtime flags (isRunning, subMode, stats) but not UI routing.
+        const preservedTab = currentState.uiNavigation?.currentTab;
+
         // Merge our runtime state into storage state
         // We "own" isRunning, subMode, stats.processed, stats.alltimeCleared while running
         // Helper for deep merging to avoid wiping storage
@@ -647,6 +644,13 @@ async function saveState() {
 
         // Merge runtime state into store state
         mergeDeep(currentState, state);
+
+        // Don't let the default 'home' in content.js overwrite a meaningful UI tab
+        // (e.g. 'scanResults') set by sidepanel. Only allow explicit navigations like 'completed'.
+        if (state.uiNavigation?.currentTab === 'home' && preservedTab && preservedTab !== 'home') {
+            if (!currentState.uiNavigation) currentState.uiNavigation = {};
+            currentState.uiNavigation.currentTab = preservedTab;
+        }
 
         await chrome.storage.local.set({ extension_state: currentState });
     } catch (e) {
@@ -815,8 +819,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(state);
 
     } else if (message.action === 'GET_COUNT') {
-        const countEl = document.querySelector('.mn-invitations-preview__header .t-black--light');
-        const count = countEl ? parseInt(countEl.innerText.replace(/[^0-9]/g, '')) : 0;
+        const count = getLinkedInTotalCount() ?? 0;
         sendResponse({ count });
 
     } else if (message.action === 'PAUSE_WITHDRAW') {
@@ -895,23 +898,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 function getLinkedInTotalCount() {
-    // Search broadly for elements that might contain "People (X)"
-    // LinkedIn often puts these in header tabs, left-rail filters, or radio groups
-    // Using a broad but specific selector set ensures we find it regardless of the container
+    // Tier 1: cloud/learned override targets the exact count element directly.
+    // Supports both a CSS string override and the element-descriptor format.
+    const pendingCountSel = getSelector('pending_count', null);
+    if (pendingCountSel) {
+        try {
+            const els = Array.from(document.querySelectorAll(pendingCountSel));
+            for (const el of els) {
+                const count = parseInt((el.textContent || '').replace(/[^0-9]/g, ''), 10);
+                if (!isNaN(count) && count > 0) {
+                    if (state.stats.pendingInvitations !== count) {
+                        state.stats.pendingInvitations = count;
+                        state.stats.pendingUpdatedAt = Date.now();
+                    }
+                    return count;
+                }
+            }
+        } catch (_) { /* invalid selector from cloud; fall through */ }
+    }
+
+    // Tier 2: Broad text-pattern search across semantic elements
+    // LinkedIn puts the count in header tabs, left-rail filters, or radio groups
     const selectors = [
-        '[role="tab"]', 
-        '[role="radio"]', 
-        'nav button', 
-        'nav a', 
-        'label', 
+        '[role="tab"]',
+        '[role="radio"]',
+        'nav button',
+        'nav a',
+        'label',
         'span',
         'h1',
         'h2'
     ];
-    
-    // We want to favor elements that look like navigation/filter components or headers
+
     const elements = document.querySelectorAll(selectors.join(','));
-    
+
     for (const el of elements) {
         const text = (el.textContent || '').trim();
         // Regex handles "People (905)", "People 905", "People (1,100)"
@@ -926,12 +946,9 @@ function getLinkedInTotalCount() {
         if (countStr) {
             const count = parseInt(countStr.replace(/,/g, ''), 10);
             if (!isNaN(count)) {
-                // Sync state if it changed significantly (prevents excessive saves)
-                // If isRunning, we update stats.remaining too
                 if (state.stats.pendingInvitations !== count) {
                     state.stats.pendingInvitations = count;
                     state.stats.pendingUpdatedAt = Date.now();
-                    saveState();
                 }
                 return count;
             }
@@ -1035,6 +1052,34 @@ function scrollTo(y) {
         scrollContainer.scrollTop = y;
     } else {
         window.scrollTo(0, y);
+    }
+}
+
+// Scroll to the bottom in viewport-sized steps (simulates spacebar presses).
+// This ensures LinkedIn's IntersectionObserver fires at every intermediate
+// position, which is what actually triggers infinite scroll content loading.
+async function scrollToBottomIncremental() {
+    const step = Math.floor((window.innerHeight || 800) * 0.85);
+
+    const getPos = () => scrollContainer
+        ? scrollContainer.scrollTop
+        : (window.scrollY || document.documentElement.scrollTop);
+
+    const doScroll = () => {
+        if (scrollContainer && scrollContainer !== document.body) {
+            scrollContainer.scrollBy({ top: step, behavior: 'instant' });
+        } else {
+            window.scrollBy({ top: step, behavior: 'instant' });
+        }
+    };
+
+    let lastPos = -1;
+    while (state.isRunning) {
+        const pos = getPos();
+        if (pos === lastPos) break; // reached the bottom, nothing left to scroll
+        lastPos = pos;
+        doScroll();
+        await wait(80); // let IntersectionObserver fire between each step
     }
 }
 
@@ -1262,9 +1307,9 @@ async function scrollToBottom() {
         const initialHeight = getScrollHeight();
         const initialCount = findWithdrawButtons().length;
 
-        scrollTo(initialHeight);
+        await scrollToBottomIncremental();
 
-        // REACTIVE WAIT: Proceed the instant content loads
+        // Settle wait for any batch-loaded content after reaching the bottom
         await waitForContentChange(initialHeight, initialCount, 2000);
 
         const buttons = findWithdrawButtons();
@@ -1343,8 +1388,8 @@ async function scrollToBottom() {
             state.stats.total = state.settings.targetCount;
         }
 
-        // Simple scroll to bottom
-        scrollTo(getScrollHeight());
+        // Re-confirm bottom position after scanning, then let content settle
+        await scrollToBottomIncremental();
 
         // Also scroll last item into view
         if (currentCount > 0) {
@@ -1413,8 +1458,7 @@ async function scrollToBottom() {
                 const jiggleAmount = noChange >= 5 ? -1200 : (noChange >= 3 ? -800 : -400);
                 scrollBy(jiggleAmount);
                 await wait(600);
-                scrollTo(getScrollHeight());
-                await wait(400);
+                await scrollToBottomIncremental();
             } else {
                 let msg = `Waiting for LinkedIn... (${noChange}/${maxRetries})`;
                 sendScrollProgress(currentCount, linkedInTotal, msg);
@@ -1485,14 +1529,16 @@ function findWithdrawButtons() {
         if (learned.length > 0) buttons = learned;
     }
 
-    // Primary: Look for specific data-view-name on buttons
+    // Primary: data-view-name selector (use cloud/learned override if available)
     if (buttons.length === 0) {
-        buttons = Array.from(document.querySelectorAll('button[data-view-name="sent-invitations-withdraw-single"]'));
+        const withdrawSel = getSelector('withdraw_button', 'button[data-view-name="sent-invitations-withdraw-single"]');
+        buttons = Array.from(document.querySelectorAll(withdrawSel));
     }
 
-    // Secondary: Look for specific data-view-name on <a> tags (LinkedIn sometimes uses links styled as buttons)
+    // Secondary: <a> tags with the same data-view-name (LinkedIn sometimes uses links styled as buttons)
     if (buttons.length === 0) {
-        const links = Array.from(document.querySelectorAll('a[data-view-name="sent-invitations-withdraw-single"]'));
+        const withdrawLinkSel = getSelector('withdraw_button_link', 'a[data-view-name="sent-invitations-withdraw-single"]');
+        const links = Array.from(document.querySelectorAll(withdrawLinkSel));
         if (links.length > 0) buttons = links;
     }
 
@@ -1864,13 +1910,13 @@ async function processNext() {
     });
 
     highlightConnection(btn, 'active');
-    await wait(150);
+    await wait(50);
 
     let confirmed = false;
 
     if (state.settings.debugMode) {
         // Debug mode: Just highlight the button, don't click
-        const card = btn.closest('.invitation-card__container') || btn.closest('li');
+        const card = findCard(btn);
 
         // Highlight active processing
         if (card) {
@@ -1960,14 +2006,16 @@ async function waitAndClickDialogConfirm() {
     let waited = 0;
 
     // Give the modal animation time to start before we begin polling
-    await wait(300);
+    await wait(100);
 
     while (waited < maxWait) {
         // Learned selector from Repair Layout takes highest priority.
         // Verify it's inside an actual open dialog so we don't click a stale element.
         if (selectorOverrides && selectorOverrides.confirm_withdraw) {
             const learnedBtn = findElementsByLearned(selectorOverrides.confirm_withdraw)[0];
-            if (learnedBtn && (learnedBtn.closest('dialog[open]') || learnedBtn.closest('.artdeco-modal'))) {
+            const dialogSel = getSelector('dialog_open', 'dialog[open]');
+            const legacySel = getSelector('modal_legacy', '.artdeco-modal');
+            if (learnedBtn && (learnedBtn.closest(dialogSel) || learnedBtn.closest(legacySel))) {
                 learnedBtn.click();
                 return true;
             }
@@ -1975,10 +2023,12 @@ async function waitAndClickDialogConfirm() {
 
         // LinkedIn's withdrawal confirmation uses a native <dialog open> element.
         // The confirm button carries aria-label="Withdraw invitation sent to [Name]".
-        const modal = document.querySelector('dialog[open]');
+        const dialogSel = getSelector('dialog_open', 'dialog[open]');
+        const modal = document.querySelector(dialogSel);
         if (modal) {
             // Most specific: aria-label starts with "Withdraw invitation sent to"
-            const ariaBtn = modal.querySelector('button[aria-label^="Withdraw invitation sent to"]');
+            const confirmSel = getSelector('confirm_button_aria', 'button[aria-label^="Withdraw invitation sent to"]');
+            const ariaBtn = modal.querySelector(confirmSel);
             if (ariaBtn) { ariaBtn.click(); return true; }
 
             // Text fallback: button whose visible text is exactly "Withdraw"
@@ -1992,7 +2042,8 @@ async function waitAndClickDialogConfirm() {
         }
 
         // Legacy artdeco-modal fallback for older LinkedIn UI versions
-        const legacyModal = document.querySelector('.artdeco-modal');
+        const legacyModalSel = getSelector('modal_legacy', '.artdeco-modal');
+        const legacyModal = document.querySelector(legacyModalSel);
         if (legacyModal) {
             const ariaBtn = legacyModal.querySelector('button[aria-label^="Withdraw invitation sent to"]');
             if (ariaBtn) { ariaBtn.click(); return true; }
@@ -2013,15 +2064,13 @@ async function waitForDialogToClose() {
     const checkInterval = 100;
     let waited = 0;
 
-    // Give LinkedIn time to begin the close animation
-    await wait(200);
-
     while (waited < maxWait) {
-        // Only check the two real modal patterns — role="dialog" is NOT used by LinkedIn
-        const dialog = document.querySelector('dialog[open], .artdeco-modal');
+        const dialogSel = getSelector('dialog_open', 'dialog[open]');
+        const legacySel = getSelector('modal_legacy', '.artdeco-modal');
+        const dialog = document.querySelector(`${dialogSel}, ${legacySel}`);
         if (!dialog) {
-            // Extra pause for fade-out animation before we start the next withdrawal
-            await wait(300);
+            // Brief pause for LinkedIn DOM to settle before next withdrawal
+            await wait(100);
             return true;
         }
         await wait(checkInterval);
@@ -2310,6 +2359,7 @@ function highlightConnection(element, type) {
         card.style.transition = 'background 0.3s, border 0.3s';
         card.style.backgroundColor = '#fee2e2'; // Light red background
         card.style.border = '2px solid #ef4444'; // Bright red border
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else if (type === 'skip') {
         card.classList.add('cc-highlight-skip');
     }
@@ -2342,11 +2392,11 @@ async function scanConnections() {
         const lastHeight = getScrollHeight();
         const lastCount = findWithdrawButtons().length;
 
-        // Scroll to bottom using helper
-        scrollTo(lastHeight);
+        // Scroll to bottom in viewport-sized steps so LinkedIn's IntersectionObserver
+        // fires at every position — same effect as holding the spacebar.
+        await scrollToBottomIncremental();
 
-        // REACTIVE WAIT: No more "blind" 1500ms or 800ms delays
-        // Tightened to 1500ms to allow faster first-jiggle intervention
+        // Brief settle wait after reaching the bottom for any batch-loaded content.
         await waitForContentChange(lastHeight, lastCount, 1500);
 
         // Check for growth
@@ -2439,15 +2489,14 @@ async function scanConnections() {
 
                 Logger.log(`ClearConnect: Jiggling scroll... (${noChangeCount}/15)`);
                 const jiggleAmount = noChangeCount >= 5 ? -1200 : (noChangeCount >= 3 ? -800 : -400);
-                
+
                 if (scrollContainer && scrollContainer !== document.body) {
                     scrollContainer.scrollBy({ top: jiggleAmount, behavior: 'smooth' });
                 } else {
                     window.scrollBy({ top: jiggleAmount, behavior: 'smooth' });
                 }
                 await wait(600);
-                scrollTo(getScrollHeight());
-                await wait(400);
+                await scrollToBottomIncremental();
             }
 
             // 4. Ultimate give up

@@ -1,5 +1,26 @@
 # ClearConnect Release Notes
 
+## Version 2.5.2 - The Speed & Sync Update ⚡️
+
+ClearConnect just got faster, smarter, and infinitely more reliable! We’ve rebuilt the core engine that powers our withdrawal logic to ensure you never miss a beat when LinkedIn changes its layout. 
+
+### 🚀 Speed & Usability Improvements
+- **Lightning Fast**: Under-the-hood performance tweaks ensure the extension runs smoother and uses fewer resources while scanning your connections.
+- **Intuitive Settings**: We've refined the Advanced Settings menu so keeping your extension updated with the latest layout fixes is just a single click away. 
+
+### 📡 Bulletproof Cloud Sync
+LinkedIn changes its design often, which occasionally used to break the extension. Not anymore!
+- **Auto-Healing Connections**: If LinkedIn updates its layout, ClearConnect can now instantly fetch the latest working configuration directly from our cloud server. No more waiting days for an app store update!
+- **Smarter Relearning**: If you ever need to use the "Repair Layout" tool yourself, it now learns your screen flawlessly without saving any of your personal data, and seamlessly applies it across the entire extension.
+
+### 📥 How to Install
+1. Download the latest `clearconnect` folder.
+2. Open Google Chrome and go to `chrome://extensions/` in your URL bar.
+3. Turn on **Developer mode** using the toggle in the top right corner.
+4. Click **Load unpacked** in the top left and select your downloaded ClearConnect folder.
+5. You're ready to go!
+
+---
 ## Version 2.5.1 - Stability & CI Update 🛠️
 
 This patch resolves critical issues with the dynamic selector management system and improves our continuous integration pipeline.
