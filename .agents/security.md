@@ -81,11 +81,11 @@ The secret is accepted **only** as an `Authorization: Bearer` header, never as a
 URL query parameter, and is compared by hashing both sides and diffing in
 constant time.
 
-> **Why.** The earlier Worker defaulted to `ADMIN_SECRET || 'REDACTED_DEFAULT_SECRET'`, so
-> a deployment that forgot to set the secret was silently world-writable — and
-> the schema it serves becomes CSS selectors executed against every user's
-> LinkedIn session. It also took the secret from `?secret=`, which leaks into
-> browser history, referrer headers, and edge logs.
+> **Why.** The earlier Worker fell back to a hardcoded development secret when
+> `ADMIN_SECRET` was unset, so a deployment that forgot to set the secret was
+> silently world-writable — and the schema it serves becomes CSS selectors run
+> against every user's LinkedIn session. It also accepted the secret from
+> `?secret=`, which leaks into browser history, referrers, and edge logs.
 
 ### 6. Learned selectors are sanitised before use
 

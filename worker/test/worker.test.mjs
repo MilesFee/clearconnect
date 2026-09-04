@@ -62,8 +62,8 @@ console.log('\n== admin auth ==');
   const noSecret = makeEnv({ ADMIN_SECRET: undefined });
   r = await worker.fetch(req('/admin/schema', { headers: { Authorization: 'Bearer ' } }), noSecret);
   check('unset ADMIN_SECRET -> 503 not 200', r.status === 503, `got ${r.status}`);
-  r = await worker.fetch(req('/admin/schema', { method:'POST', headers: { Authorization: 'Bearer REDACTED_DEFAULT_SECRET', 'Content-Type':'application/json' }, body:'{}' }), noSecret);
-  check('legacy REDACTED_DEFAULT_SECRET rejected', r.status === 503, `got ${r.status}`);
+  r = await worker.fetch(req('/admin/schema', { method:'POST', headers: { Authorization: 'Bearer any-hardcoded-fallback', 'Content-Type':'application/json' }, body:'{}' }), noSecret);
+  check('hardcoded fallback secret rejected', r.status === 503, `got ${r.status}`);
 }
 
 console.log('\n== schema write + validation ==');
