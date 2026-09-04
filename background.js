@@ -64,7 +64,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============ DIAGNOSTIC REPORTING ============
 // Endpoint for the ClearConnect Worker's /report route (see worker/README.md).
 // Leave empty to disable reporting entirely -- nothing is sent when unset.
-const REPORT_ENDPOINT = '';
+// Whoever deploys the Worker should point this at their own deployment.
+const REPORT_ENDPOINT = 'https://clearconnect-selectors.milesfee.workers.dev/report';
 
 // Never email more than one report of the same type per interval. Without this a
 // stuck page could fire a report per retry and flood the alert inbox.

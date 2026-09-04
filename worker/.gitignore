@@ -4,3 +4,4 @@ node_modules/
 .dev.vars.*
 dist/
 !.dev.vars.example
+wrangler.local.jsonc

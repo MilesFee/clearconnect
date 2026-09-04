@@ -55,41 +55,51 @@ DKIM, and DMARC records it offers. Propagation is usually 5–15 minutes.
 > plans. For internal alerting, add the recipient under **Email Routing >
 > Destination addresses**, confirm the verification email, and it costs nothing.
 
-### 4. Set the addresses
+### 4. Set the addresses and the admin secret
 
-Edit `vars` in `wrangler.jsonc`:
-
-```jsonc
-"vars": {
-  "ALERT_TO": "eng-alerts@yourcompany.com",   // verified destination address
-  "ALERT_FROM": "clearconnect@yourdomain.com", // on the onboarded domain
-  "ALLOWED_ORIGINS": ""                        // see step 6
-}
-```
-
-### 5. Set the admin secret
+All three are **secrets, not vars**, so that no email address or credential is
+ever committed to this repository:
 
 ```bash
+npx wrangler secret put ALERT_TO      # verified destination address
+npx wrangler secret put ALERT_FROM    # sender on the onboarded domain
 openssl rand -base64 32 | npx wrangler secret put ADMIN_SECRET
 ```
+
+With `ALERT_TO` or `ALERT_FROM` unset, `/report` accepts the event and returns
+`{"delivered": false}` rather than failing — reporting degrades quietly instead
+of erroring in users' browsers.
 
 The admin API **fails closed**: if `ADMIN_SECRET` is unset, `/admin/schema`
 returns `503` rather than allowing unauthenticated writes. There is no default
 or development secret.
 
-### 6. Deploy
+### 5. Deploy
 
 ```bash
 npx wrangler deploy
 ```
 
-Then wire the extension to it — in `background.js`, set:
+`wrangler.jsonc` ships with a placeholder KV namespace id so that no
+account-specific identifier is committed. To deploy against a namespace that
+already exists, copy the config and fill in the real id — the copy is gitignored:
+
+```bash
+cp wrangler.jsonc wrangler.local.jsonc   # edit the id, then:
+npx wrangler deploy -c wrangler.local.jsonc
+```
+
+### 6. Point the extension at it
+
+In `background.js`:
 
 ```js
-const REPORT_ENDPOINT = 'https://clearconnect-worker.<your-subdomain>.workers.dev/report';
+const REPORT_ENDPOINT = 'https://<worker>.<your-subdomain>.workers.dev/report';
 ```
 
 Leaving `REPORT_ENDPOINT` empty disables reporting entirely; nothing is sent.
+
+### 7. Tighten CORS
 
 Once the extension is published and has a stable ID, tighten CORS by setting
 `ALLOWED_ORIGINS` to `chrome-extension://<extension-id>` and redeploying.
