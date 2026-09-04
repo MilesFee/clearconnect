@@ -370,7 +370,9 @@ function renderScanResults(results) {
 
     results.forEach((item, idx) => {
         try {
-            const topic = extractTopicFromMessage(item.message) ||
+            // escapeHTML at assignment: the topic is a raw slice of a LinkedIn
+            // message and is interpolated into innerHTML below.
+            const topic = escapeHTML(extractTopicFromMessage(item.message)) ||
                 `"${escapeHTML(item.message.substring(0, 40))}${item.message.length > 40 ? '...' : ''}"`;
             const shortMsg = escapeHTML(item.message.substring(0, 60) + (item.message.length > 60 ? '...' : ''));
             const ageRange = item.ages && item.ages.length > 0
@@ -864,7 +866,7 @@ function updateLiveScanResults(groups) {
 
     // Render each group as a scan-result-item card (same as selection list, sans checkbox)
     for (const g of sorted.slice(0, 30)) {
-        const topic = extractTopicFromMessage(g.message) ||
+        const topic = escapeHTML(extractTopicFromMessage(g.message)) ||
             `"${escapeHTML(g.message.substring(0, 40))}${g.message.length > 40 ? '...' : ''}"`;
         const shortMsg = escapeHTML(g.message.substring(0, 60) + (g.message.length > 60 ? '...' : ''));
 

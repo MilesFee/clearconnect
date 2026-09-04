@@ -5,7 +5,7 @@ Thank you for your interest in contributing to ClearConnect! We welcome improvem
 ## Getting Started
 
 1.  **Fork the repository** on GitHub.
-2.  **Clone your fork** locally: `git clone https://github.com/your-username/clearconnect.git`
+2.  **Clone your fork** locally.
 3.  **Create a branch** for your feature or fix: `git checkout -b feature/amazing-feature`
 4.  **Install dependencies**: This project uses vanilla JS, HTML, and CSS. No Node.js build steps are required for the core extension.
 5.  **Load the extension**:

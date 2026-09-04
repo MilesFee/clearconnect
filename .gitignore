@@ -3,27 +3,32 @@ node_modules/
 package-lock.json
 yarn.lock
 
-# System Files
+# System files
 .DS_Store
 Thumbs.db
 
-# IDES / Editors
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# AI / Agent Artifacts
-.agent/
-.gemini/
-brain/
-*.log
+# Secrets / local config -- never commit these
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+!worker/.dev.vars.example
 
-# Build / Temp
+# Cloudflare
+.wrangler/
+
+# Build / temp
 dist/
 build/
 coverage/
+*.log
 
-# OS
+# Packaged extension
 *.crx
 *.pem

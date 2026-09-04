@@ -413,67 +413,41 @@ async function saveLearned(learned) {
     Logger.log('ClearConnect: Saved learned selectors', overrides);
 
     // Send before/after config diff
-    sendWebhookReport('selectors_learned', {
+    sendDiagnosticReport('selectors_learned', {
         reason: 'User completed Repair Layout',
         before: previousOverrides,
         after: overrides
     });
 }
 
-// ============ WEBHOOK REPORTING ============
-const INTERNAL_WEBHOOK = 'REDACTED_WEBHOOK_URL';
+// ============ DIAGNOSTIC REPORTING ============
+// Hands an event to the background service worker, which is the only place that
+// knows the delivery endpoint. Rendering and delivery happen in the Cloudflare
+// Worker (see worker/README.md) -- this side only assembles minimal, non-PII facts.
 
-function sendWebhookReport(eventType, data = {}) {
+function sendDiagnosticReport(eventType, data = {}) {
     try {
-        // Deep clone to prevent mutation
+        // Deep clone to prevent mutation of caller state.
         const safeData = JSON.parse(JSON.stringify(data));
 
-        // Strip text content that might contain names (PII protection)
+        // Strip free text, which is the only field that can carry a person's
+        // name or the body of an invitation message.
         if (safeData && typeof safeData === 'object') {
             for (const val of Object.values(safeData)) {
                 if (val && val.text) val.text = '[redacted]';
             }
         }
 
-        // Color by severity
-        const colorMap = {
-            detection_failure: 15158332, // Red
-            fatal_error: 15158332,       // Red
-            selectors_learned: 3066993,  // Green
-        };
-
-        // Build fields from data, truncating large values
-        const fields = Object.entries(safeData)
-            .filter(([k]) => k !== 'reason')
-            .slice(0, 8)
-            .map(([k, v]) => ({
-                name: k,
-                value: typeof v === 'object'
-                    ? '```json\n' + JSON.stringify(v, null, 1).substring(0, 800) + '\n```'
-                    : String(v).substring(0, 800),
-                inline: typeof v !== 'object'
-            }));
-
-        const payload = {
-            content: null,
-            embeds: [{
-                title: `ClearConnect: ${eventType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`,
-                description: safeData.reason || 'Event triggered.',
-                color: colorMap[eventType] || 3447003,
-                fields,
-                footer: { text: `ClearConnect v${chrome.runtime.getManifest?.()?.version || '?'}` },
-                timestamp: new Date().toISOString()
-            }]
-        };
-
-        // Route through background service worker to avoid host_permissions for discord.com
         chrome.runtime.sendMessage({
-            action: 'SEND_WEBHOOK',
-            url: INTERNAL_WEBHOOK,
-            payload
+            action: 'REPORT_EVENT',
+            event: {
+                type: eventType,
+                version: chrome.runtime.getManifest?.()?.version || 'unknown',
+                data: safeData
+            }
         }).catch(() => { });
     } catch (e) {
-        // Webhook failures must never break the extension
+        // Reporting must never break the extension.
     }
 }
 
@@ -498,9 +472,9 @@ function triggerDetectionFailure(reason) {
     }).catch(() => { });
 
     // Send webhook alert with full diagnostics
-    sendWebhookReport('detection_failure', {
+    sendDiagnosticReport('detection_failure', {
         reason: reason,
-        url: window.location.href,
+        path: window.location.pathname, // pathname only -- query strings can carry identifiers
         cards: document.querySelectorAll('[role="listitem"], [componentkey]').length,
         buttons: document.querySelectorAll('button').length,
         profileLinks: document.querySelectorAll('a[href*="/in/"]').length,

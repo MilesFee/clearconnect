@@ -1,0 +1,16 @@
+{
+  "name": "clearconnect-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker for ClearConnect: serves LinkedIn selectors and emails diagnostic alerts.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "test": "node test/worker.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

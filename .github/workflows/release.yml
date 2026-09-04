@@ -26,7 +26,7 @@ jobs:
       run: |
         mkdir -p dist
         # Create a clean zip directly from selected files to avoid bloat
-        # Excludes: .git, .github, .agent, .gitignore, tests, etc.
+        # Ships only the extension runtime: no worker/, .agents/, or CI config.
         zip -r dist/clearconnect-${{ steps.get_version.outputs.tag }}.zip \
           manifest.json \
           background.js \
@@ -36,7 +36,7 @@ jobs:
           utils.js \
           popup.html \
           sidepanel.html \
-          popup.css \
+          main.css \
           icons/ \
           LICENSE \
           README.md \

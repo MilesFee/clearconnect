@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clearconnect-worker",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+
+  // Stores the LinkedIn selector schema and the report rate-limit counters.
+  // Create with: npx wrangler kv namespace create SELECTORS_KV
+  "kv_namespaces": [
+    { "binding": "SELECTORS_KV", "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
+  ],
+
+  // Cloudflare Email Service binding used to deliver alert emails.
+  // Requires a domain onboarded to Email Service on this account.
+  "send_email": [
+    { "name": "EMAIL" }
+  ],
+
+  // Non-secret configuration. ADMIN_SECRET is NOT here -- it is a secret,
+  // set with: npx wrangler secret put ADMIN_SECRET
+  "vars": {
+    // Where alert emails are delivered. Must be a verified destination address
+    // if you are on the free plan.
+    "ALERT_TO": "",
+    // Sender address on a domain onboarded to Cloudflare Email Service.
+    "ALERT_FROM": "",
+    // Comma-separated CORS allow-list, e.g. "chrome-extension://<extension-id>".
+    // Leave empty to allow any origin.
+    "ALLOWED_ORIGINS": ""
+  }
+}

@@ -15,7 +15,7 @@ ClearConnect is a powerful Chrome extension that helps you manage your "Sent" in
     *   **By Count:** Withdraw the oldest X requests.
     *   **By Age:** Withdraw requests older than X months/weeks.
 *   **Debug Mode:** Test filters and settings safely without executing withdrawals.
-*   **Privacy Focused:** Runs entirely locally in your browser. No data collection.
+*   **Privacy Conscious:** Your invitations, names, and message content never leave your browser. See [Data & Privacy](#-data--privacy).
 
 ## 📦 Installation
 
@@ -30,7 +30,7 @@ ClearConnect is a powerful Chrome extension that helps you manage your "Sent" in
 8.  The extension should now be installed and ready to use.
 
 ### For Developers (Source Code)
-1.  **Clone** the repository: `git clone https://github.com/your-username/clearconnect.git`
+1.  **Clone** this repository and `cd` into it.
 2.  Open Chrome and go to `chrome://extensions/`.
 3.  Enable **Developer Mode**.
 4.  Click **Load unpacked** and select the repository folder.
@@ -44,6 +44,35 @@ ClearConnect is a powerful Chrome extension that helps you manage your "Sent" in
     *   **Age:** Remove requests older than a specific time.
     *   **Message:** Group requests by message content and withdraw by group.
 4.  Click **Run** (or **Scan**).
+
+## 🔒 Data & Privacy
+
+Everything that identifies a person stays on your machine. Invitation names,
+message bodies, profile URLs, and your withdrawal history live only in your
+browser's local extension storage — they are never transmitted.
+
+The extension does send **anonymous diagnostic reports** when it breaks, so the
+maintainers find out that LinkedIn changed its page layout. A report contains:
+
+*   the event type (for example, "detection failure") and the extension version
+*   counts of elements found on the page
+*   which selector keys are in use
+*   the page path — never the query string
+
+It never contains names, message text, profile URLs, or any free text. Reports
+are handled by a Cloudflare Worker that emails the team; see
+[`worker/README.md`](worker/README.md). Reporting is disabled entirely when the
+endpoint is unset in `background.js`.
+
+## 🗂️ Repository Layout
+
+| Path | Purpose |
+| ---- | ------- |
+| `manifest.json`, `*.js`, `*.html`, `main.css` | The extension itself. No build step. |
+| `icons/` | `logo.svg` is canonical; the PNGs are generated from it. |
+| `worker/` | Cloudflare Worker: serves selectors, emails alerts. |
+| `.agents/` | Architecture and security reference for contributors and AI agents. |
+| `AGENTS.md` | Conventions and guardrails. Read before changing code. |
 
 ## 🤝 Contributing
 

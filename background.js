@@ -47,15 +47,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
-    // Relay webhook from content script to Discord (avoids host_permissions for discord.com)
-    if (message.action === 'SEND_WEBHOOK') {
-        if (message.url && message.payload) {
-            fetch(message.url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(message.payload)
-            }).catch(() => { });
-        }
+    // Forward a diagnostic event to the reporting Worker.
+    // The destination is fixed below -- deliberately NOT taken from the message,
+    // so a compromised page context cannot aim the extension at another host.
+    if (message.action === 'REPORT_EVENT') {
+        postDiagnosticReport(message.event);
         return; // Fire-and-forget, no response needed
     }
 
@@ -64,6 +60,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => { });
     }
 });
+
+// ============ DIAGNOSTIC REPORTING ============
+// Endpoint for the ClearConnect Worker's /report route (see worker/README.md).
+// Leave empty to disable reporting entirely -- nothing is sent when unset.
+const REPORT_ENDPOINT = '';
+
+// Never email more than one report of the same type per interval. Without this a
+// stuck page could fire a report per retry and flood the alert inbox.
+const REPORT_MIN_INTERVAL_MS = 5 * 60 * 1000;
+const MAX_REPORT_BYTES = 8 * 1024;
+const lastReportAt = new Map();
+
+function postDiagnosticReport(event) {
+    if (!REPORT_ENDPOINT) return;
+    if (!event || typeof event.type !== 'string') return;
+
+    const now = Date.now();
+    const previous = lastReportAt.get(event.type) || 0;
+    if (now - previous < REPORT_MIN_INTERVAL_MS) return;
+    lastReportAt.set(event.type, now);
+
+    let body;
+    try {
+        body = JSON.stringify({
+            type: String(event.type).slice(0, 64),
+            version: String(event.version || 'unknown').slice(0, 32),
+            data: event.data && typeof event.data === 'object' ? event.data : {}
+        });
+    } catch (e) {
+        return; // Unserialisable payload -- drop it.
+    }
+    if (body.length > MAX_REPORT_BYTES) return;
+
+    fetch(REPORT_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body
+    }).catch(() => { }); // Delivery failures must never surface to the user.
+}
 
 // Enable side panel only on LinkedIn sent invitations page
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
