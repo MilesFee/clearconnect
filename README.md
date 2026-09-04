@@ -15,6 +15,9 @@ ClearConnect is a powerful Chrome extension that helps you manage your "Sent" in
     *   **By Count:** Withdraw the oldest X requests.
     *   **By Age:** Withdraw requests older than X months/weeks.
 *   **Debug Mode:** Test filters and settings safely without executing withdrawals.
+*   **Self-Healing Selectors:** When LinkedIn changes its page layout, the extension
+    repairs itself — either locally via *Repair Layout*, or for everyone at once from
+    the server, without waiting for a new release.
 *   **Privacy Conscious:** Your invitations, names, and message content never leave your browser. See [Data & Privacy](#-data--privacy).
 
 ## 📦 Installation
@@ -73,6 +76,7 @@ endpoint is unset in `background.js`.
 | `worker/` | Cloudflare Worker: serves selectors, emails alerts. |
 | `.agents/` | Architecture and security reference for contributors and AI agents. |
 | `AGENTS.md` | Conventions and guardrails. Read before changing code. |
+| `HANDOFF.md` | Taking ownership: infrastructure, secrets, and what is still open. |
 
 ## 🤝 Contributing
 

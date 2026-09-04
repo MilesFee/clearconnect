@@ -36,7 +36,7 @@ when extraction returns `null`.
 > unescaped into `innerHTML` in the side panel. A crafted invitation message
 > reading `Reaching out about A<img src=x onerror=...>` would have executed script
 > inside an extension page with `chrome.storage` and messaging access. Fixed at
-> `sidepanel.js:375` and `sidepanel.js:869`.
+> `sidepanel.js:473` and `sidepanel.js:967`.
 
 ### 2. The service worker never fetches a caller-supplied URL
 
@@ -51,9 +51,13 @@ when extraction returns `null`.
 
 ### 3. No secrets in this repository
 
-The repo is **public**. No webhook URLs, API keys, bearer tokens, account IDs, or
-KV namespace IDs in tracked files. Worker secrets go through
-`npx wrangler secret put`; `.dev.vars` is gitignored.
+The repo is **public**. No webhook URLs, API keys, bearer tokens, passwords, or
+email addresses in tracked files. Worker secrets — `ADMIN_SECRET`, `ALERT_TO`,
+`ALERT_FROM` — go through `npx wrangler secret put`; `.dev.vars` is gitignored.
+
+The KV namespace id in `worker/wrangler.jsonc` is a deliberate exception. It is a
+resource handle, not a credential: it grants nothing without an account-scoped API
+token, and CI cannot deploy without it. The token itself lives in GitHub Secrets.
 
 > **Why.** A live Discord webhook URL was committed in `content.js` and remained
 > readable in a public repository. Anyone could post to that channel or flood it.
@@ -101,6 +105,19 @@ reports per IP per hour, 25 globally per hour, and a 5-minute per-type limit in
 the extension itself. IPs are SHA-256 hashed with a server-side salt before use
 as rate-limit keys.
 
+### 8. The selector sync validates before it stores
+
+`syncCloudSelectors()` in `background.js` checks the response shape with
+`isValidSelectorSchema()` before writing to `cloud_selectors`, and leaves the
+previous value alone when the check fails.
+
+> **Why.** The sync originally fetched `/` and accepted anything with at least one
+> key. `/` is the Worker's health probe, which returns a two-key object — so the
+> sync would have stored the health payload *as the selector schema*, reported
+> success, and silently discarded the real one. A loud failure is recoverable; a
+> silent one is not. Keep the validation, and keep the endpoint pointed at
+> `/selectors`.
+
 ## Permissions
 
 The manifest requests `activeTab`, `scripting`, `storage`, `sidePanel`, and host
@@ -113,9 +130,12 @@ reporting needs no additional host permission.
 
 ## Checklist before publishing
 
-- [ ] `grep -rniE "webhook|api[_-]?key|secret|token|bearer" -- . ':!worker/README.md'` finds nothing live
+- [ ] No live webhook in the extension: `grep -rniE "discord\.com/api|hooks\.slack\.com" *.js`
+      (CI enforces this too — the release job fails rather than packaging one)
+- [ ] No real email address committed (`example.com` fixtures are fine — RFC 2606):
+      `git ls-files | xargs grep -hoE "[a-z0-9._%-]+@[a-z0-9.-]+\.[a-z]{2,}" | grep -v "example\.\(com\|org\|net\)"`
 - [ ] No `.env`, `.dev.vars`, or `.wrangler/` in `git status`
-- [ ] `cd worker && npm test` passes
-- [ ] The four JS files parse: `for f in *.js; do node --check $f; done`
+- [ ] `cd worker && npm test` passes (38 tests)
+- [ ] All five JS files parse: `for f in *.js; do node --check $f; done`
 - [ ] Icons are real PNGs at 16/48/128: `file icons/*.png`
 - [ ] README's privacy section still matches what the code actually sends

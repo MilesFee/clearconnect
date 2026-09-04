@@ -21,6 +21,11 @@ Cloudflare-native.
 | `GET`  | `/admin/schema`  | bearer      | Read the stored schema.                       |
 | `POST` | `/admin/schema`  | bearer      | Replace the stored schema.                    |
 
+The extension reads `/selectors` on startup, on install, every 12 hours, and on
+demand, then validates the response before storing it. **`/` is a health probe,
+not the schema** — pointing the extension at `/` would store the health payload as
+a selector schema while reporting success.
+
 \* `/report` is unauthenticated by necessity — the extension cannot hold a
 credential — so it is defended by strict payload validation, a 16 KB body cap,
 an event-type allow-list, and per-IP + global hourly rate limits.
@@ -124,7 +129,9 @@ Diagnostics only:
 - element counts on the page (cards, buttons, profile links)
 - which selector keys are overridden
 - the page **path** — never the query string
-- for `selectors_learned`, the before/after selector diff
+- for `selectors_learned`, the before/after selector diff, plus the resulting
+  schema as a **paste-ready block** you can drop straight into the admin console's
+  Live schema editor
 
 Never included: names, invitation message bodies, profile URLs, or any free text
 (the extension redacts `text` fields before sending, and the Worker only renders
@@ -140,6 +147,17 @@ npx wrangler dev
 Email sending is simulated locally unless the binding is marked `"remote": true`.
 
 Tail production logs with `npx wrangler tail`.
+
+## Tests
+
+```bash
+cd worker && npm test
+```
+
+38 tests covering routing, admin auth (including that a URL-query secret is
+rejected and that an unset `ADMIN_SECRET` fails closed), schema validation, HTML
+escaping of report values and of the paste-ready schema block, the body-size cap,
+rate limiting, and CORS. CI runs them before the deploy job.
 
 ## Threat model notes
 

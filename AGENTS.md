@@ -18,7 +18,7 @@ files that ship. Vanilla ES2020, loaded directly by Chrome.
 
 ```
 manifest.json        MV3 manifest. Content script is scoped to one LinkedIn URL.
-background.js        Service worker: side-panel lifecycle + diagnostic reporting.
+background.js        Service worker: side-panel lifecycle, selector sync, reporting.
 content.js           Injected into LinkedIn. Scanning, withdrawing, selector healing.
 popup.js/.html       Toolbar popup UI (idle state, settings, history, stats).
 sidepanel.js/.html   Side panel UI (active runs, scan results, completion).
@@ -47,18 +47,30 @@ page *path*, and the extension version. Never names, message bodies, profile
 URLs, query strings, or free text. The extension redacts `text` fields and the
 Worker allow-lists event types; keep both.
 
-**No secrets in the repo.** No webhook URLs, API keys, account IDs, or tokens —
-this repository is public. Worker secrets go through `wrangler secret put`.
+**No secrets in the repo.** No webhook URLs, API keys, tokens, passwords, or
+email addresses — this repository is public. Worker secrets (`ADMIN_SECRET`,
+`ALERT_TO`, `ALERT_FROM`) go through `wrangler secret put`. The KV namespace id in
+`worker/wrangler.jsonc` is a deliberate exception: it is a resource handle, useless
+without an account-scoped API token, and CI cannot deploy without it.
 
-**`chrome.storage.local` is the source of truth**, under two keys:
-`extension_state` and `learned_selectors`. `content.js` merges deeply into
-`extension_state` rather than overwriting it, because settings are written
-concurrently from the popup. Preserve that merge.
+**`chrome.storage.local` is the source of truth**, under `extension_state`,
+`learned_selectors`, `cloud_selectors`, and `last_sync_time`. `content.js` merges
+deeply into `extension_state` rather than overwriting it, because settings are
+written concurrently from the popup. Preserve that merge.
 
 **Selectors are data, not code.** LinkedIn's DOM changes often. Route every DOM
 query through `getSelector(role, fallback)` so it can be overridden by learned or
 server-supplied values. Learned selectors are sanitised against a tag allow-list
 before being applied — keep that check.
+
+**The selector sync is the release valve.** `background.js` pulls the schema from
+the Worker's `/selectors` on startup, on install, every 12 hours via
+`chrome.alarms`, and on demand — which is why the manifest needs `alarms`. It
+**validates the response before storing it** (`isValidSelectorSchema`), because
+`/` is a health probe whose payload once got stored as a schema while the sync
+reported success. Cloud values are the base; a user's own learned selectors
+override them. Don't point it at `/`, don't drop the validation, don't flip the
+precedence.
 
 ## Working style
 

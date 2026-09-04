@@ -24,11 +24,13 @@ the UI shows a "wrong page" state rather than failing.
 
 ## State
 
-`chrome.storage.local` holds two keys and is the single source of truth:
+`chrome.storage.local` is the single source of truth:
 
 - **`extension_state`** — run state (`isRunning`, `isPaused`, `subMode`), stats,
   settings, withdrawal history, and UI navigation.
 - **`learned_selectors`** — per-user selector overrides produced by Repair Layout.
+- **`cloud_selectors`** — the schema last fetched from the Worker.
+- **`last_sync_time`** — when that fetch succeeded.
 
 Multiple contexts write concurrently: `content.js` owns run state while a job is
 active, and the popup writes settings at any time. `saveState()` in `content.js`
@@ -67,6 +69,37 @@ of breakage. Three layers absorb that:
    a learned value cannot introduce an unexpected element type.
 3. **Server-supplied schema** from the Worker's `/selectors` route — fixes every
    user at once, without an extension release.
+
+### How the sync actually runs
+
+`background.js` owns it, because only the service worker can make the cross-origin
+request:
+
+| Trigger | Where |
+| ------- | ----- |
+| `chrome.runtime.onStartup` | browser launch |
+| `chrome.runtime.onInstalled` | install and update |
+| `chrome.alarms` every 720 min | the 12-hour refresh — this is why the manifest needs `alarms` |
+| `SYNC_SELECTORS` message | a manual refresh from the UI |
+
+It fetches `SELECTORS_ENDPOINT` (the Worker's **`/selectors`**, *not* `/`), runs
+the response through `isValidSelectorSchema()`, and only then writes
+`cloud_selectors` and `last_sync_time` to storage. A response that fails the check
+is discarded and the previous schema is left in place.
+
+`content.js` merges the two sources with cloud as the base and the user's own
+learned selectors on top:
+
+```js
+selectorOverrides = { ...(cloud_selectors || {}), ...(learned_selectors || {}) };
+```
+
+So a server fix reaches everyone, and a user who has run Repair Layout keeps their
+own working values. That precedence is deliberate — don't flip it.
+
+> The endpoint must stay `/selectors`. `/` is a health probe, and the validation
+> exists because pointing at `/` used to store the health payload as a schema
+> while reporting success. See [`security.md`](security.md#8-the-selector-sync-validates-before-it-stores).
 
 Every DOM query goes through `getSelector(role, fallback)`. Adding a raw
 `querySelector` with a literal selector bypasses all three layers — don't.
@@ -109,7 +142,8 @@ rather than editing them in an image editor, and keep the padding smaller at
 
 ## The Worker
 
-Optional. The extension works fully without it — `REPORT_ENDPOINT` empty means no
-reporting, and absent server selectors means the built-in fallbacks are used.
+Degrades gracefully, but it is not decorative: it is how a LinkedIn DOM change
+gets fixed without shipping a release. With `REPORT_ENDPOINT` empty nothing is
+reported, and if `/selectors` is unreachable the built-in fallbacks are used.
 
 See [`../worker/README.md`](../worker/README.md) for routes, bindings, and setup.
