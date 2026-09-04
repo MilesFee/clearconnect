@@ -41,8 +41,8 @@ cd worker && npm install && npx wrangler login
 npx wrangler kv namespace create SELECTORS_KV
 ```
 
-Copy the returned `id` into `wrangler.jsonc`, replacing
-`REPLACE_WITH_YOUR_KV_NAMESPACE_ID`.
+Copy the returned `id` into the `kv_namespaces` block of `wrangler.jsonc`,
+replacing the one that is there.
 
 ### 3. Onboard a domain to Cloudflare Email Service
 
@@ -80,14 +80,14 @@ or development secret.
 npx wrangler deploy
 ```
 
-`wrangler.jsonc` ships with a placeholder KV namespace id so that no
-account-specific identifier is committed. To deploy against a namespace that
-already exists, copy the config and fill in the real id — the copy is gitignored:
+`wrangler.jsonc` carries a real KV namespace id. That is a resource handle, not
+a credential — the API token is the secret, and it lives in GitHub Secrets — and
+CI cannot deploy without it. Point it at your own namespace when you take the
+project over.
 
-```bash
-cp wrangler.jsonc wrangler.local.jsonc   # edit the id, then:
-npx wrangler deploy -c wrangler.local.jsonc
-```
+Pushing to `main` deploys the Worker automatically: the `deploy-worker` job runs
+after `test-worker` passes, using the `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` repository secrets.
 
 ### 6. Point the extension at it
 

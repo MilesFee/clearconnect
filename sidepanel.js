@@ -8,6 +8,96 @@ function escapeHTML(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// ============ ERROR BANNER ============
+// Stale-selector keywords that indicate the user needs to run Repair Layout
+const STALE_SELECTOR_PATTERNS = [
+    /selectors? may need updating/i,
+    /repair layout/i,
+    /linkedin.{0,40}changed/i,
+    /could not find.{0,30}withdraw/i,
+    /detection failure/i,
+];
+
+function isStaleSelectorsError(message) {
+    return STALE_SELECTOR_PATTERNS.some(p => p.test(message || ''));
+}
+
+/**
+ * Show a banner at the top of the panel.
+ * @param {'error'|'warning'} severity
+ * @param {string} title  - Bold headline
+ * @param {string} detail - Smaller body text
+ * @param {{label:string, action:Function}|null} cta - Optional action button
+ */
+function showErrorBanner(severity, title, detail, cta = null) {
+    const el = document.getElementById('error-banner');
+    if (!el) return;
+
+    const ctaHTML = cta
+        ? `<button class="error-banner-action" id="error-banner-cta">${escapeHTML(cta.label)}</button>`
+        : '';
+
+    el.innerHTML = `
+        <div class="error-banner-box severity-${severity}">
+            <span class="error-banner-icon">${severity === 'error' ? '⚠' : '&#9888;'}</span>
+            <div class="error-banner-body">
+                <div class="error-banner-title">${escapeHTML(title)}</div>
+                <div class="error-banner-detail">${escapeHTML(detail)}</div>
+                ${ctaHTML}
+            </div>
+            <button class="error-banner-close" id="error-banner-close" title="Dismiss">&#10005;</button>
+        </div>
+    `;
+
+    el.classList.add('visible');
+
+    document.getElementById('error-banner-close')?.addEventListener('click', clearErrorBanner);
+
+    if (cta) {
+        document.getElementById('error-banner-cta')?.addEventListener('click', () => {
+            cta.action();
+        });
+    }
+}
+
+function clearErrorBanner() {
+    const el = document.getElementById('error-banner');
+    if (el) {
+        el.classList.remove('visible');
+        el.innerHTML = '';
+    }
+}
+
+function showStaleSelectorsWarning() {
+    showErrorBanner(
+        'warning',
+        'Selectors may be out of date',
+        'LinkedIn\'s UI may have changed. Go to Settings → Repair Layout to retrain the extension.',
+        {
+            label: 'Repair Layout Now',
+            action: () => {
+                if (activeTabId) {
+                    chrome.tabs.sendMessage(activeTabId, { action: 'START_LEARNING' }).catch(() => {});
+                }
+                clearErrorBanner();
+            }
+        }
+    );
+}
+
+function showDetectionError(reason) {
+    if (isStaleSelectorsError(reason)) {
+        showStaleSelectorsWarning();
+    } else {
+        showErrorBanner(
+            'error',
+            'Detection Error',
+            reason || 'Something went wrong. Try refreshing the LinkedIn page.',
+            null
+        );
+    }
+}
+
 const DEFAULTS = {
     safeThreshold: 1, safeUnit: 'month', withdrawCount: 10, ageValue: 3,
     ageUnit: 'month', currentMode: 'count', safeMode: true, debugMode: false,
@@ -185,7 +275,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
         // Trigger re-render if any core UI state or safety settings changed
         if (needsReRender) {
             chrome.storage.local.get('extension_state').then(({ extension_state }) => {
-                if (extension_state) renderUI(extension_state);
+                if (extension_state) {
+                    // Prevent a content.js saveState() from clobbering the scan results view.
+                    // Once we've rendered scanResults, keep it until the user explicitly navigates away.
+                    if (lastRenderedTab === 'scanResults' && !extension_state.isRunning) {
+                        extension_state.uiNavigation = extension_state.uiNavigation || {};
+                        extension_state.uiNavigation.currentTab = 'scanResults';
+                    }
+                    renderUI(extension_state);
+                }
             });
         }
     }
@@ -1035,8 +1133,27 @@ function setupEventDelegation() {
 
 // ============ MESSAGE LISTENERS ============
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'DETECTION_FAILURE') {
+        showDetectionError(message.reason || 'Could not detect connections on the page.');
+    }
+
     if (message.action === 'COMPLETE') {
         if (message.state) {
+            const stopType = message.state?.lastRunResult?.stopType;
+            const stopMessage = message.state?.lastRunResult?.message || '';
+
+            // Show error banner for error stops that indicate stale selectors
+            if (stopType === 'error') {
+                if (isStaleSelectorsError(stopMessage)) {
+                    showStaleSelectorsWarning();
+                } else {
+                    showErrorBanner('error', 'Operation Failed', stopMessage || 'An error occurred.');
+                }
+            } else {
+                // Clear any previous error on successful completion
+                clearErrorBanner();
+            }
+
             // Robustly merge complete run result
             safeSaveState(message.state).then(fullState => {
                 renderUI(fullState);
@@ -1044,15 +1161,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
     }
 
+    // Clear banner at the start of a new operation
+    if (message.action === 'SCROLL_PROGRESS' && message.progress === 0) {
+        clearErrorBanner();
+    }
+
     if (message.action === 'SCAN_COMPLETE' && message.results) {
         foundScanResults = message.results;
         selectedScanHashes.clear();
         chrome.storage.local.set({ savedScanResults: foundScanResults });
 
-        // Navigate to scan results safely
-        safeSaveState({ uiNavigation: { currentTab: 'scanResults' } }).then(state => {
-            renderUI(state);
-        });
+        // Render immediately from in-memory results — no async storage round-trip needed.
+        const content = document.getElementById('sidepanel-content');
+        if (content) {
+            content.innerHTML = getScanResultsHTML();
+            renderScanResults(foundScanResults);
+            lastRenderedTab = 'scanResults';
+            lastRenderedSubMode = null;
+        }
+
+        // Persist nav state in background so reopening the panel shows scan results.
+        safeSaveState({ uiNavigation: { currentTab: 'scanResults' } });
     }
 
     // Real-time scroll progress

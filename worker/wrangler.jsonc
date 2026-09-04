@@ -6,9 +6,11 @@
   "observability": { "enabled": true },
 
   // Stores the LinkedIn selector schema and the report rate-limit counters.
-  // Create with: npx wrangler kv namespace create SELECTORS_KV
+  // This id is a resource handle, not a credential -- the API token is the secret
+  // and lives in GitHub Secrets. CI needs a real id here to deploy.
+  // Point it at your own namespace: npx wrangler kv namespace create SELECTORS_KV
   "kv_namespaces": [
-    { "binding": "SELECTORS_KV", "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
+    { "binding": "SELECTORS_KV", "id": "e0d3fff154494194b56689ed4363f3af" }
   ],
 
   // Cloudflare Email Service binding used to deliver alert emails.

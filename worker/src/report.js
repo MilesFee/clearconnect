@@ -13,6 +13,8 @@ import { escapeHTML, jsonResponse, sha256Hex } from './lib.js';
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_FIELDS = 16;
 const MAX_VALUE_CHARS = 800;
+/** The learned schema is meant to be pasted into the admin console, so it gets more room. */
+const MAX_SCHEMA_CHARS = 4000;
 
 /** Flood control. KV is eventually consistent, which is fine for alerting. */
 const MAX_PER_IP_PER_HOUR = 3;
@@ -89,7 +91,16 @@ function normaliseEvent(body) {
         ? body.data
         : {};
 
+    // For a Repair Layout result, the post-repair schema is the thing an operator
+    // actually acts on: it gets pasted straight into the admin console. Lift it out
+    // of the field list and give it its own block rather than truncating it to 800.
+    let pasteSchema = null;
+    if (type === 'selectors_learned' && data.after && typeof data.after === 'object') {
+        pasteSchema = JSON.stringify(data.after, null, 2).slice(0, MAX_SCHEMA_CHARS);
+    }
+
     const fields = Object.entries(data)
+        .filter(([key]) => !(pasteSchema && key === 'after'))
         .slice(0, MAX_FIELDS)
         .map(([key, value]) => ({
             key: String(key).slice(0, 64),
@@ -98,7 +109,7 @@ function normaliseEvent(body) {
                 : String(value).slice(0, MAX_VALUE_CHARS),
         }));
 
-    return { type, version, fields };
+    return { type, version, fields, pasteSchema };
 }
 
 function renderEmail(event) {
@@ -111,6 +122,9 @@ function renderEmail(event) {
         `Time (UTC): ${when}`,
         '',
         ...event.fields.map(f => `${f.key}: ${f.value}`),
+        ...(event.pasteSchema
+            ? ['', 'Paste this into the admin console (Live schema editor):', '', event.pasteSchema]
+            : []),
     ].join('\n');
 
     // Every interpolated value below is attacker-controllable: escape all of it.
@@ -137,6 +151,16 @@ function renderEmail(event) {
       &middot; ${escapeHTML(when)}
     </div>
     <table style="width:100%;border-collapse:collapse">${rows}</table>
+    ${event.pasteSchema ? `
+    <div style="padding:16px 20px;border-top:1px solid #e2e4e9">
+      <div style="font-size:12px;font-weight:700;color:#202127;margin-bottom:6px">
+        Paste into the admin console &rarr; Live schema editor
+      </div>
+      <pre style="margin:0;background:#f3f4f6;border:1px solid #e2e4e9;border-radius:6px;
+                  padding:12px;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;
+                  white-space:pre-wrap;word-break:break-word;color:#202127"
+      >${escapeHTML(event.pasteSchema)}</pre>
+    </div>` : ''}
     <div style="padding:14px 20px;color:#8e94a4;font-size:11px;line-height:1.5">
       Automated report from the ClearConnect extension. Diagnostics only — no names,
       message bodies, or profile URLs are collected.

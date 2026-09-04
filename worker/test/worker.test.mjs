@@ -164,5 +164,28 @@ console.log('\n== CORS ==');
   check('preflight -> 204', r.status === 204);
 }
 
+console.log('\n== selectors_learned paste block ==');
+{
+  const env = makeEnv();
+  const after = { withdraw_button: 'button[data-view-name="x"]', dialog_open: 'dialog[open]' };
+  await worker.fetch(req('/report', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'selectors_learned', version: '2.6.1',
+      data: { reason: 'User completed Repair Layout', before: {}, after } }) }), env);
+  const m = env.sent[0];
+  check('email sent for selectors_learned', !!m);
+  check('paste block present in html', m.html.includes('Live schema editor'), 'missing');
+  check('schema is pretty-printed and complete', m.html.includes('dialog[open]') && m.html.includes('withdraw_button'));
+  check('paste block present in text alternative', m.text.includes('Paste this into the admin console'));
+  check('after is not duplicated as a field row', (m.html.match(/&gt;after&lt;|>after</g) || []).length === 0);
+
+  // The schema is remote-supplied: it must still be escaped inside the <pre>.
+  const env2 = makeEnv();
+  await worker.fetch(req('/report', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'selectors_learned', version: '2.6.1',
+      data: { after: { evil: '</pre><img src=x onerror=alert(1)>' } } }) }), env2);
+  const h = env2.sent[0].html;
+  check('paste block escapes injected markup', h.includes('&lt;/pre&gt;') && !h.includes('</pre><img'), 'injection leaked');
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

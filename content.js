@@ -39,7 +39,7 @@ const state = {
 };
 
 // Runtime execution variables (reset on start, not necessary for UI persistence)
-let actionDelay = 600;
+let actionDelay = 300;
 let baseWait = 300;
 let retryCount = 0;
 let scrollContainer = null;
@@ -52,8 +52,9 @@ let selectorOverrides = null; // null = not loaded yet, {} = loaded (empty or wi
 // Load learned selectors from storage on startup
 async function loadSelectorOverrides() {
     try {
-        const { learned_selectors } = await chrome.storage.local.get('learned_selectors');
-        selectorOverrides = learned_selectors || {};
+        const { learned_selectors, cloud_selectors } = await chrome.storage.local.get(['learned_selectors', 'cloud_selectors']);
+        // Cloud serves as base, local learning overrides it
+        selectorOverrides = { ...(cloud_selectors || {}), ...(learned_selectors || {}) };
         Logger.log('ClearConnect: Loaded selector overrides', Object.keys(selectorOverrides).length > 0 ? selectorOverrides : '(none)');
     } catch (e) {
         selectorOverrides = {};
@@ -75,18 +76,31 @@ function getSelector(role, fallback) {
 function findCard(element) {
     if (!element) return null;
 
-    // Walk all ancestors and collect all matching card containers
-    // We want the OUTERMOST one (furthest from the element), not the innermost
+    // Strategy 1: Walk all ancestors looking for known LinkedIn card attributes
+    // Keep overwriting so we get the OUTERMOST match (furthest from element)
     let el = element.parentElement;
     let bestCard = null;
     while (el && el !== document.body) {
         if (el.matches('[role="listitem"], [componentkey]')) {
-            bestCard = el; // Keep overwriting: last assignment = highest ancestor = outermost
+            bestCard = el;
+        }
+        el = el.parentElement;
+    }
+    if (bestCard) return bestCard;
+
+    // Strategy 2: Find the smallest ancestor that contains a LinkedIn profile link.
+    // The card is the deepest ancestor that wraps BOTH the button AND the person's /in/ link.
+    // This is robust against LinkedIn renaming their data attributes.
+    el = element.parentElement;
+    while (el && el !== document.body) {
+        if (el.querySelector('a[href*="/in/"]')) {
+            return el;
         }
         el = el.parentElement;
     }
 
-    return bestCard || findCardByHeuristic(element);
+    // Strategy 3: Sibling/repeating-list heuristic
+    return findCardByHeuristic(element);
 }
 
 // Heuristic: Walk up from the element and find the nearest ancestor
@@ -94,7 +108,7 @@ function findCard(element) {
 function findCardByHeuristic(element) {
     let current = element.parentElement;
     let depth = 0;
-    while (current && current !== document.body && depth < 10) {
+    while (current && current !== document.body && depth < 20) {
         const parent = current.parentElement;
         if (parent) {
             const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
@@ -121,10 +135,12 @@ let learningMode = {
 };
 
 const LEARNING_STEPS = [
-    { key: 'withdraw', prompt: 'Click the "Withdraw" button for any person.' },
     { key: 'name', prompt: 'Click on a person\'s name (the link to their profile).' },
     { key: 'age', prompt: 'Click on the date text (e.g. "Sent 2 months ago").' },
-    { key: 'message', prompt: 'Click on a message text (if present). Or press Escape to skip.' }
+    { key: 'message', prompt: 'Click on a message text (if present). Or press Escape or Space to skip.' },
+    { key: 'withdraw', prompt: 'Click the "Withdraw" button for the SAME person.' },
+    { key: 'open_modal', prompt: 'Almost done! Click "Withdraw" again to open the confirmation modal.' },
+    { key: 'confirm_withdraw', prompt: 'Now click the blue <strong>Withdraw</strong> button inside the modal. <small style="opacity:0.7">(Don\'t worry — we\'ll intercept the click. Nothing will be withdrawn.)</small>' }
 ];
 
 function startLearningMode() {
@@ -210,12 +226,28 @@ function learningClickHandler(e) {
     // This prevents the capture listener from interfering with normal page usage
     if (!learningMode.active || !learningMode.step) return;
 
+    if (learningMode.step === 'open_modal') {
+        // Let the click pass through to open the modal
+        const currentIdx = LEARNING_STEPS.findIndex(s => s.key === learningMode.step);
+        const nextIdx = currentIdx + 1;
+
+        if (learningMode.highlightDiv) learningMode.highlightDiv.style.display = 'none';
+
+        setTimeout(() => {
+            learningMode.step = LEARNING_STEPS[nextIdx].key;
+            updateLearningTooltip(nextIdx);
+        }, 800);
+        return;
+    }
+
+    const stepKey = learningMode.step;
+
+    // Prevent default on all steps so we don't accidentally navigate or withdraw
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
 
     const target = e.target;
-    const stepKey = learningMode.step;
 
     // Synthesize selector info from the clicked element
     const selectorInfo = synthesizeSelector(target);
@@ -233,6 +265,18 @@ function learningClickHandler(e) {
     } else {
         // All steps done - validate
         validateAndSave();
+        
+        // After validation and saving begins, we can safely close the modal programmatically
+        // We delay it slightly so our Escape listener doesn't intercept it
+        setTimeout(() => {
+            const escEvent = new KeyboardEvent('keydown', {
+                key: 'Escape',
+                code: 'Escape',
+                bubbles: true,
+                cancelable: true
+            });
+            document.dispatchEvent(escEvent);
+        }, 1600); // validateAndSave takes 1500ms
     }
 }
 
@@ -278,39 +322,93 @@ function updateLearningTooltip(stepIdx) {
     if (!learningMode.tooltip) return;
     const step = LEARNING_STEPS[stepIdx];
     learningMode.tooltip.innerHTML = `<strong>ClearConnect Learning Mode</strong><br>${step.prompt}<br><small style="opacity:0.6">Step ${stepIdx + 1} of ${LEARNING_STEPS.length} | Press Escape to cancel | Enter/Space to skip</small>`;
+
+    // For the confirm step the LinkedIn modal is open and centered — slide to top-left
+    if (step.key === 'confirm_withdraw') {
+        learningMode.tooltip.style.top = '16px';
+        learningMode.tooltip.style.left = '16px';
+        learningMode.tooltip.style.bottom = 'auto';
+        learningMode.tooltip.style.right = 'auto';
+        learningMode.tooltip.style.transform = 'none';
+        learningMode.tooltip.style.textAlign = 'left';
+        learningMode.tooltip.style.maxWidth = '320px';
+    } else {
+        // Centered-top for all other steps
+        learningMode.tooltip.style.top = '16px';
+        learningMode.tooltip.style.left = '50%';
+        learningMode.tooltip.style.bottom = 'auto';
+        learningMode.tooltip.style.right = 'auto';
+        learningMode.tooltip.style.transform = 'translateX(-50%)';
+        learningMode.tooltip.style.textAlign = 'center';
+        learningMode.tooltip.style.maxWidth = '420px';
+    }
+
+    // Push tooltip to the very end of the DOM so it sits above any newly created modals
+    if (learningMode.tooltip.parentElement) {
+        document.body.appendChild(learningMode.tooltip);
+    }
 }
 
 // Synthesize a robust selector from a clicked element
 function synthesizeSelector(el) {
-    const info = {
-        tag: el.tagName.toLowerCase(),
-        text: (el.textContent || '').trim().substring(0, 80),
-        attributes: {}
-    };
-
-    // Capture stable attributes
-    const stableAttrs = ['data-testid', 'data-view-name', 'componentkey', 'role', 'aria-label', 'href'];
-    for (const attr of stableAttrs) {
-        if (el.hasAttribute(attr)) {
-            info.attributes[attr] = el.getAttribute(attr);
+    // If the user clicked a featureless child element (e.g. an inner <span> with no
+    // data attributes), walk up to find the nearest ancestor that carries useful
+    // attributes so the selector targets the real interactive element.
+    const USEFUL_ATTRS = ['data-testid', 'data-view-name', 'aria-label', 'role'];
+    function hasUsefulAttrs(node) {
+        return USEFUL_ATTRS.some(a => node.hasAttribute && node.hasAttribute(a));
+    }
+    let target = el;
+    if (!hasUsefulAttrs(el)) {
+        let ancestor = el.parentElement;
+        let depth = 0;
+        while (ancestor && ancestor !== document.body && depth < 6) {
+            if (hasUsefulAttrs(ancestor)) { target = ancestor; break; }
+            ancestor = ancestor.parentElement;
+            depth++;
         }
     }
 
-    // Build a CSS selector from stable attributes
+    const info = {
+        tag: target.tagName.toLowerCase(),
+        attributes: {}
+    };
+
+    // Capture stable attributes from the resolved target (href omitted to prevent PII exposure)
+    const stableAttrs = ['data-testid', 'data-view-name', 'componentkey', 'role', 'aria-label'];
+    for (const attr of stableAttrs) {
+        if (target.hasAttribute(attr)) {
+            info.attributes[attr] = target.getAttribute(attr);
+        }
+    }
+
+    // Build a CSS selector. For aria-label values that contain a person's name
+    // (e.g. "Withdraw invitation sent to Julia Mays"), use a starts-with selector
+    // so the learned rule matches ALL people, not just the one chosen during learning.
     let selector = info.tag;
     if (info.attributes['data-testid']) {
         selector += `[data-testid="${info.attributes['data-testid']}"]`;
     } else if (info.attributes['data-view-name']) {
         selector += `[data-view-name="${info.attributes['data-view-name']}"]`;
+    } else if (info.attributes['aria-label']) {
+        const ariaLabel = info.attributes['aria-label'];
+        // Strip person-specific suffix from "Withdraw invitation sent to [Name]"
+        const withdrawPrefix = ariaLabel.match(/^(Withdraw invitation sent to )/i);
+        if (withdrawPrefix) {
+            selector += `[aria-label^="${withdrawPrefix[1]}"]`;
+            // Crucial for parity: Sanitize the actual attribute stored in the JSON payload
+            info.attributes['aria-label'] = withdrawPrefix[1];
+        } else {
+            selector += `[aria-label="${ariaLabel.replace(/"/g, '\\"')}"]`;
+        }
     } else if (info.attributes.role) {
         selector += `[role="${info.attributes.role}"]`;
     }
 
-    // Relative path from card container
-    const card = findCard(el);
+    // Relative path from card container (stored for diagnostics / webhook reporting)
+    const card = findCard(target);
     if (card) {
-        const path = getRelativePath(card, el);
-        info.relativePath = path;
+        info.relativePath = getRelativePath(card, target);
     }
 
     info.selector = selector;
@@ -359,7 +457,7 @@ async function validateAndSave() {
     }
 
     if (validCount >= totalChecks && totalChecks > 0) {
-        learningMode.tooltip.innerHTML = `<strong style="color:#4ade80">Validation Passed!</strong><br>Found working selectors. Saving...<br><small>The extension will use these until LinkedIn changes again.</small>`;
+        learningMode.tooltip.innerHTML = `<strong style="color:#4ade80">Validation Passed!</strong><br>Found working selectors. Saving...<br><small>The extension will use these until LinkedIn changes again. Closing modal...</small>`;
         await wait(1500);
         stopLearningMode(true);
     } else {
@@ -493,6 +591,10 @@ async function saveState() {
         const data = await chrome.storage.local.get('extension_state');
         const currentState = data.extension_state || {};
 
+        // Preserve the UI navigation tab set by sidepanel/popup before merging.
+        // Content.js owns runtime flags (isRunning, subMode, stats) but not UI routing.
+        const preservedTab = currentState.uiNavigation?.currentTab;
+
         // Merge our runtime state into storage state
         // We "own" isRunning, subMode, stats.processed, stats.alltimeCleared while running
         // Helper for deep merging to avoid wiping storage
@@ -509,6 +611,13 @@ async function saveState() {
 
         // Merge runtime state into store state
         mergeDeep(currentState, state);
+
+        // Don't let the default 'home' in content.js overwrite a meaningful UI tab
+        // (e.g. 'scanResults') set by sidepanel. Only allow explicit navigations like 'completed'.
+        if (state.uiNavigation?.currentTab === 'home' && preservedTab && preservedTab !== 'home') {
+            if (!currentState.uiNavigation) currentState.uiNavigation = {};
+            currentState.uiNavigation.currentTab = preservedTab;
+        }
 
         await chrome.storage.local.set({ extension_state: currentState });
     } catch (e) {
@@ -677,8 +786,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(state);
 
     } else if (message.action === 'GET_COUNT') {
-        const countEl = document.querySelector('.mn-invitations-preview__header .t-black--light');
-        const count = countEl ? parseInt(countEl.innerText.replace(/[^0-9]/g, '')) : 0;
+        const count = getLinkedInTotalCount() ?? 0;
         sendResponse({ count });
 
     } else if (message.action === 'PAUSE_WITHDRAW') {
@@ -757,35 +865,57 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 function getLinkedInTotalCount() {
-    // Search broadly for elements that might contain "People (X)"
-    // LinkedIn often puts these in header tabs, left-rail filters, or radio groups
-    // Using a broad but specific selector set ensures we find it regardless of the container
+    // Tier 1: cloud/learned override targets the exact count element directly.
+    // Supports both a CSS string override and the element-descriptor format.
+    const pendingCountSel = getSelector('pending_count', null);
+    if (pendingCountSel) {
+        try {
+            const els = Array.from(document.querySelectorAll(pendingCountSel));
+            for (const el of els) {
+                const count = parseInt((el.textContent || '').replace(/[^0-9]/g, ''), 10);
+                if (!isNaN(count) && count > 0) {
+                    if (state.stats.pendingInvitations !== count) {
+                        state.stats.pendingInvitations = count;
+                        state.stats.pendingUpdatedAt = Date.now();
+                    }
+                    return count;
+                }
+            }
+        } catch (_) { /* invalid selector from cloud; fall through */ }
+    }
+
+    // Tier 2: Broad text-pattern search across semantic elements
+    // LinkedIn puts the count in header tabs, left-rail filters, or radio groups
     const selectors = [
-        '[role="tab"]', 
-        '[role="radio"]', 
-        'nav button', 
-        'nav a', 
-        'label', 
-        'span'
+        '[role="tab"]',
+        '[role="radio"]',
+        'nav button',
+        'nav a',
+        'label',
+        'span',
+        'h1',
+        'h2'
     ];
-    
-    // We want to favor elements that look like navigation/filter components
+
     const elements = document.querySelectorAll(selectors.join(','));
-    
+
     for (const el of elements) {
         const text = (el.textContent || '').trim();
         // Regex handles "People (905)", "People 905", "People (1,100)"
-        const match = text.match(/People\s*(?:\(?)\s*([0-9,]+)\s*(?:\)?)/i);
+        const matchPeople = text.match(/People\s*(?:\(?)\s*([0-9,]+)\s*(?:\)?)/i);
+        // Regex handles "1,160 Connections"
+        const matchConnections = text.match(/([0-9,]+)\s*Connections/i);
         
-        if (match) {
-            const count = parseInt(match[1].replace(/,/g, ''), 10);
+        let countStr = null;
+        if (matchPeople) countStr = matchPeople[1];
+        else if (matchConnections) countStr = matchConnections[1];
+
+        if (countStr) {
+            const count = parseInt(countStr.replace(/,/g, ''), 10);
             if (!isNaN(count)) {
-                // Sync state if it changed significantly (prevents excessive saves)
-                // If isRunning, we update stats.remaining too
                 if (state.stats.pendingInvitations !== count) {
                     state.stats.pendingInvitations = count;
                     state.stats.pendingUpdatedAt = Date.now();
-                    saveState();
                 }
                 return count;
             }
@@ -798,7 +928,18 @@ function getLinkedInTotalCount() {
 function getConnectionMessage(btn) {
     const card = findCard(btn);
     if (!card) return null;
-    const msgEl = card.querySelector('[data-testid="expandable-text-box"]');
+    
+    let msgEl = null;
+    
+    if (selectorOverrides && selectorOverrides.message) {
+        const learnedEls = findElementsByLearned(selectorOverrides.message);
+        msgEl = learnedEls.find(el => card.contains(el));
+    }
+    
+    if (!msgEl) {
+        msgEl = card.querySelector('[data-testid="expandable-text-box"]');
+    }
+    
     if (!msgEl) return null;
 
     // Clone to avoid modifying DOM, then remove "show more" button text
@@ -878,6 +1019,34 @@ function scrollTo(y) {
         scrollContainer.scrollTop = y;
     } else {
         window.scrollTo(0, y);
+    }
+}
+
+// Scroll to the bottom in viewport-sized steps (simulates spacebar presses).
+// This ensures LinkedIn's IntersectionObserver fires at every intermediate
+// position, which is what actually triggers infinite scroll content loading.
+async function scrollToBottomIncremental() {
+    const step = Math.floor((window.innerHeight || 800) * 0.85);
+
+    const getPos = () => scrollContainer
+        ? scrollContainer.scrollTop
+        : (window.scrollY || document.documentElement.scrollTop);
+
+    const doScroll = () => {
+        if (scrollContainer && scrollContainer !== document.body) {
+            scrollContainer.scrollBy({ top: step, behavior: 'instant' });
+        } else {
+            window.scrollBy({ top: step, behavior: 'instant' });
+        }
+    };
+
+    let lastPos = -1;
+    while (state.isRunning) {
+        const pos = getPos();
+        if (pos === lastPos) break; // reached the bottom, nothing left to scroll
+        lastPos = pos;
+        doScroll();
+        await wait(80); // let IntersectionObserver fire between each step
     }
 }
 
@@ -1041,10 +1210,16 @@ async function scanForTargets() {
 
         targets.push(targetObj);
 
-        // Add to foundMatchingPeople to populate UI lists
-        if (!state.foundMatchingPeople.some(p => p.name === personName)) {
+        // Add to foundMatchingPeople - use profileUrl as primary dedup key so
+        // cards whose name resolved to 'Unknown' don't collapse into a single entry
+        const profileUrl = getProfileUrl(btn);
+        const alreadyAdded = profileUrl
+            ? state.foundMatchingPeople.some(p => p.profileUrl === profileUrl)
+            : (personName !== 'Unknown' && state.foundMatchingPeople.some(p => p.name === personName));
+        if (!alreadyAdded) {
             state.foundMatchingPeople.push({
                 name: personName,
+                profileUrl: profileUrl || null,
                 age: age ? `${age.value} ${age.unit}${age.value > 1 ? 's' : ''}` : '-',
                 cleared: false
             });
@@ -1080,7 +1255,7 @@ async function scanForTargets() {
 async function scrollToBottom() {
     let lastCount = 0;
     let noChange = 0;
-    let maxRetries = 10; // Reduced from 30 for faster failure when truly stuck
+    let maxRetries = 15; // Increased to allow deeper jiggles when far from goal
     let lastCardElement = null;
 
     const linkedInTotal = getLinkedInTotalCount() || 1000; // fallback estimate
@@ -1099,9 +1274,9 @@ async function scrollToBottom() {
         const initialHeight = getScrollHeight();
         const initialCount = findWithdrawButtons().length;
 
-        scrollTo(initialHeight);
+        await scrollToBottomIncremental();
 
-        // REACTIVE WAIT: Proceed the instant content loads
+        // Settle wait for any batch-loaded content after reaching the bottom
         await waitForContentChange(initialHeight, initialCount, 2000);
 
         const buttons = findWithdrawButtons();
@@ -1180,8 +1355,8 @@ async function scrollToBottom() {
             state.stats.total = state.settings.targetCount;
         }
 
-        // Simple scroll to bottom
-        scrollTo(getScrollHeight());
+        // Re-confirm bottom position after scanning, then let content settle
+        await scrollToBottomIncremental();
 
         // Also scroll last item into view
         if (currentCount > 0) {
@@ -1212,6 +1387,16 @@ async function scrollToBottom() {
         } else {
             noChange++;
 
+            // Early exit conditions to prevent unnecessary jiggling when near goal
+            if (currentCount >= (linkedInTotal - 15) && noChange >= 1) {
+                Logger.log('ClearConnect: Very near LinkedIn total count, proceeding early');
+                break;
+            }
+            if (currentCount >= (linkedInTotal - 40) && noChange >= 2) {
+                Logger.log('ClearConnect: Near LinkedIn total count, proceeding');
+                break;
+            }
+
             // CHECK FOR LOAD MORE PROACTIVELY IF STUCK OR NEAR BOTTOM
             if (noChange >= 2 || isAtScrollBottom()) {
                 Logger.log('ClearConnect: Checking for Load More button...');
@@ -1223,8 +1408,8 @@ async function scrollToBottom() {
                 }
             }
 
-            // Only do jiggle when stuck (2+ attempts with no change)
-            if (noChange >= 2 && noChange % 2 === 0) {
+            // Only do jiggle when stuck (1+ attempts with no change)
+            if (noChange % 2 === 1) {
                 let msg = `Triggering load... (${noChange}/${maxRetries})`;
                 sendScrollProgress(currentCount, linkedInTotal, msg);
 
@@ -1236,10 +1421,11 @@ async function scrollToBottom() {
                 }
 
                 // Natural jiggle - smooth scroll up, pause, smooth scroll back
-                scrollBy(-400);
-                await wait(400);
-                scrollTo(getScrollHeight());
-                await wait(300);
+                // Deep jiggle if we've been stuck for a while to force intersection observer
+                const jiggleAmount = noChange >= 5 ? -1200 : (noChange >= 3 ? -800 : -400);
+                scrollBy(jiggleAmount);
+                await wait(600);
+                await scrollToBottomIncremental();
             } else {
                 let msg = `Waiting for LinkedIn... (${noChange}/${maxRetries})`;
                 sendScrollProgress(currentCount, linkedInTotal, msg);
@@ -1252,10 +1438,6 @@ async function scrollToBottom() {
         const atBottom = isAtScrollBottom();
         const sameLastCard = lastCardElement === currentLastCard && currentLastCard !== null;
 
-        // Stricter total check
-        const tolerance = 40; // Allow some disparity (hidden items, ads, etc)
-        const nearLinkedInCount = currentCount >= (linkedInTotal - tolerance);
-
         // Conditions to break loop:
         // 1. We reached or exceeded the official total
         if (currentCount >= linkedInTotal) {
@@ -1263,26 +1445,21 @@ async function scrollToBottom() {
             break;
         }
 
-        // 2. We are VERY near the official total AND haven't seen changes for 1 poll (fast exit)
-        if (currentCount >= (linkedInTotal - 15) && noChange >= 1) {
-            Logger.log('ClearConnect: Very near LinkedIn total count, proceeding early');
-            break;
-        }
-
-        // 3. We are near the official total AND haven't seen changes for 2 polls (standard exit)
-        if (currentCount >= (linkedInTotal - tolerance) && noChange >= 2) {
-            Logger.log('ClearConnect: Near LinkedIn total count, proceeding');
-            break;
-        }
-
         // 2. We are literally at scroll bottom, card unchanged, and we've waited enough (slow exit)
-        if (atBottom && sameLastCard && noChange >= 5) {
-            Logger.log('ClearConnect: At physical scroll bottom with no updates, proceeding');
-            break;
+        // If we are far from the goal, wait longer before giving up
+        const farFromGoal = currentCount < (linkedInTotal - 40);
+        if (atBottom && sameLastCard) {
+            if (!farFromGoal && noChange >= 5) {
+                Logger.log('ClearConnect: At physical scroll bottom with no updates, proceeding');
+                break;
+            } else if (farFromGoal && noChange >= 12) {
+                Logger.log('ClearConnect: At physical scroll bottom, far from goal, but giving up after 12 retries');
+                break;
+            }
         }
 
-        // 3. Absolute timeout / stuck safety (very slow exit)
-        if (noChange >= 8) {
+        // 5. Absolute timeout / stuck safety (very slow exit)
+        if (noChange >= maxRetries) {
             Logger.log('ClearConnect: Stuck for too long, proceeding with what we have');
             break;
         }
@@ -1319,14 +1496,16 @@ function findWithdrawButtons() {
         if (learned.length > 0) buttons = learned;
     }
 
-    // Primary: Look for specific data-view-name on buttons
+    // Primary: data-view-name selector (use cloud/learned override if available)
     if (buttons.length === 0) {
-        buttons = Array.from(document.querySelectorAll('button[data-view-name="sent-invitations-withdraw-single"]'));
+        const withdrawSel = getSelector('withdraw_button', 'button[data-view-name="sent-invitations-withdraw-single"]');
+        buttons = Array.from(document.querySelectorAll(withdrawSel));
     }
 
-    // Secondary: Look for specific data-view-name on <a> tags (LinkedIn sometimes uses links styled as buttons)
+    // Secondary: <a> tags with the same data-view-name (LinkedIn sometimes uses links styled as buttons)
     if (buttons.length === 0) {
-        const links = Array.from(document.querySelectorAll('a[data-view-name="sent-invitations-withdraw-single"]'));
+        const withdrawLinkSel = getSelector('withdraw_button_link', 'a[data-view-name="sent-invitations-withdraw-single"]');
+        const links = Array.from(document.querySelectorAll(withdrawLinkSel));
         if (links.length > 0) buttons = links;
     }
 
@@ -1420,16 +1599,69 @@ function findWithdrawByStructure() {
 }
 
 
+// Regex to extract name from "X's profile picture" — handles ASCII and Unicode apostrophes
+// LinkedIn uses U+2019 (RIGHT SINGLE QUOTATION MARK), not plain ASCII '
+const PROFILE_PIC_RE = /^(.+?)[\u0027\u2018\u2019\u02bc]s profile picture$/i;
+
+// Find the name element nearest to `button` from a set of learned candidates.
+// Works even when findCard fails: walks up from button and returns the candidate
+// that shares the narrowest ancestor with the button (i.e. exactly one candidate
+// is contained at that ancestor level, meaning they're in the same card).
+function getNameFromLearnedSelector(button, learnedInfo) {
+    const candidates = findElementsByLearned(learnedInfo);
+    if (candidates.length === 0) return null;
+
+    // Fast path: if findCard works, use it
+    const card = findCard(button);
+    if (card) {
+        const el = candidates.find(c => card.contains(c));
+        if (el) {
+            const text = (el.textContent || '').trim();
+            if (text.length > 1 && text.length < 120) return text;
+        }
+    }
+
+    // Fallback: walk up from button and stop at the ancestor that contains
+    // exactly one candidate (= the card scope, even if findCard failed)
+    let ancestor = button.parentElement;
+    let depth = 0;
+    while (ancestor && ancestor !== document.body && depth < 20) {
+        const contained = candidates.filter(c => ancestor.contains(c));
+        if (contained.length === 1) {
+            const text = (contained[0].textContent || '').trim();
+            if (text.length > 1 && text.length < 120) return text;
+            break; // found the right scope but text is empty/bad — stop climbing
+        }
+        if (contained.length > 1) break; // too broad, stop
+        ancestor = ancestor.parentElement;
+        depth++;
+    }
+    return null;
+}
+
 function getPersonName(button) {
+    // HIGHEST PRIORITY: user-trained learned selector (explicitly taught for current layout).
+    // Checked first so Repair Layout overrides everything else after a LinkedIn update.
+    if (selectorOverrides && selectorOverrides.name) {
+        const name = getNameFromLearnedSelector(button, selectorOverrides.name);
+        if (name) return name;
+    }
+
+    // RELIABLE FALLBACK: LinkedIn embeds the name in the Withdraw button's aria-label.
+    // Format: "Withdraw invitation sent to [Name]" — no card lookup needed.
+    const btnAria = button.getAttribute('aria-label') || '';
+    const ariaMatch = btnAria.match(/^Withdraw invitation sent to (.+)$/i);
+    if (ariaMatch) return ariaMatch[1].trim();
+
     const card = findCard(button);
     if (!card) return 'Unknown';
 
+    // Profile link text (empty in newer LinkedIn UI where links only contain images)
     const nameLink = card.querySelector('a.db828f0d[href*="/in/"]');
     if (nameLink) {
         const text = nameLink.textContent.trim();
         if (text && text.length > 1) return text;
     }
-
     const links = card.querySelectorAll('a[href*="/in/"]');
     for (const link of links) {
         const text = link.textContent.trim();
@@ -1438,18 +1670,25 @@ function getPersonName(button) {
         }
     }
 
+    // img[alt] — LinkedIn's profile photos include the person's name here
     const img = card.querySelector('img[alt*="profile picture"]');
     if (img) {
-        const alt = img.getAttribute('alt') || '';
-        const match = alt.match(/^(.+?)['']s profile picture$/i);
-        if (match) return match[1];
+        const m = (img.getAttribute('alt') || '').match(PROFILE_PIC_RE);
+        if (m) return m[1];
     }
 
+    // SVG[aria-label] — fallback avatar SVGs use aria-label the same way
+    const svg = card.querySelector('svg[aria-label*="profile picture"]');
+    if (svg) {
+        const m = (svg.getAttribute('aria-label') || '').match(PROFILE_PIC_RE);
+        if (m) return m[1];
+    }
+
+    // figure[aria-label] — older LinkedIn layout
     const figure = card.querySelector('figure[aria-label*="profile picture"]');
     if (figure) {
-        const label = figure.getAttribute('aria-label') || '';
-        const match = label.match(/^(.+?)['']s profile picture$/i);
-        if (match) return match[1];
+        const m = (figure.getAttribute('aria-label') || '').match(PROFILE_PIC_RE);
+        if (m) return m[1];
     }
 
     return 'Unknown';
@@ -1476,7 +1715,15 @@ function getAge(button) {
     const card = findCard(button);
     if (!card) return null;
 
-    const text = (card.textContent || '').trim();
+    let text = (card.textContent || '').trim();
+
+    if (selectorOverrides && selectorOverrides.age) {
+        const learnedEls = findElementsByLearned(selectorOverrides.age);
+        const ageEl = learnedEls.find(el => card.contains(el));
+        if (ageEl && ageEl.textContent) {
+            text = ageEl.textContent.trim();
+        }
+    }
 
     // Check for "Sent yesterday"
     if (text.match(/Sent[\s\u00A0]+yesterday/i)) {
@@ -1630,13 +1877,13 @@ async function processNext() {
     });
 
     highlightConnection(btn, 'active');
-    await wait(150);
+    await wait(50);
 
     let confirmed = false;
 
     if (state.settings.debugMode) {
         // Debug mode: Just highlight the button, don't click
-        const card = btn.closest('.invitation-card__container') || btn.closest('li');
+        const card = findCard(btn);
 
         // Highlight active processing
         if (card) {
@@ -1673,6 +1920,16 @@ async function processNext() {
         // Normal mode: Actually click the button
         btn.click();
         confirmed = await waitAndClickDialogConfirm();
+        
+        if (confirmed) {
+            // Mark as processed so we don't accidentally click it again if LinkedIn is slow to remove it
+            const card = findCard(btn);
+            if (card) card.classList.add('cc-processed');
+            btn.classList.add('cc-processed');
+
+            // Wait for the LinkedIn modal/UI to actually clear up
+            await waitForDialogToClose();
+        }
     }
 
     if (confirmed) {
@@ -1715,23 +1972,77 @@ async function waitAndClickDialogConfirm() {
     const checkInterval = 100;
     let waited = 0;
 
+    // Give the modal animation time to start before we begin polling
+    await wait(100);
+
     while (waited < maxWait) {
-        const confirmBtn = document.querySelector('dialog[open] button[aria-label^="Withdrawn invitation sent to"]');
-        if (confirmBtn) {
-            confirmBtn.click();
-            return true;
+        // Learned selector from Repair Layout takes highest priority.
+        // Verify it's inside an actual open dialog so we don't click a stale element.
+        if (selectorOverrides && selectorOverrides.confirm_withdraw) {
+            const learnedBtn = findElementsByLearned(selectorOverrides.confirm_withdraw)[0];
+            const dialogSel = getSelector('dialog_open', 'dialog[open]');
+            const legacySel = getSelector('modal_legacy', '.artdeco-modal');
+            if (learnedBtn && (learnedBtn.closest(dialogSel) || learnedBtn.closest(legacySel))) {
+                learnedBtn.click();
+                return true;
+            }
         }
 
-        const fallbackBtn = document.querySelector('dialog[open] [data-view-name="edge-creation-connect-action"] button');
-        if (fallbackBtn) {
-            fallbackBtn.click();
-            return true;
+        // LinkedIn's withdrawal confirmation uses a native <dialog open> element.
+        // The confirm button carries aria-label="Withdraw invitation sent to [Name]".
+        const dialogSel = getSelector('dialog_open', 'dialog[open]');
+        const modal = document.querySelector(dialogSel);
+        if (modal) {
+            // Most specific: aria-label starts with "Withdraw invitation sent to"
+            const confirmSel = getSelector('confirm_button_aria', 'button[aria-label^="Withdraw invitation sent to"]');
+            const ariaBtn = modal.querySelector(confirmSel);
+            if (ariaBtn) { ariaBtn.click(); return true; }
+
+            // Text fallback: button whose visible text is exactly "Withdraw"
+            const allBtns = Array.from(modal.querySelectorAll('button'));
+            const txtBtn = allBtns.find(b => (b.textContent || '').trim().toLowerCase() === 'withdraw');
+            if (txtBtn) { txtBtn.click(); return true; }
+
+            // data-view-name fallback (older LinkedIn builds)
+            const dvBtn = modal.querySelector('[data-view-name*="withdraw"] button, button[data-view-name*="withdraw"]');
+            if (dvBtn) { dvBtn.click(); return true; }
+        }
+
+        // Legacy artdeco-modal fallback for older LinkedIn UI versions
+        const legacyModalSel = getSelector('modal_legacy', '.artdeco-modal');
+        const legacyModal = document.querySelector(legacyModalSel);
+        if (legacyModal) {
+            const ariaBtn = legacyModal.querySelector('button[aria-label^="Withdraw invitation sent to"]');
+            if (ariaBtn) { ariaBtn.click(); return true; }
+            const txtBtn = Array.from(legacyModal.querySelectorAll('button'))
+                .find(b => (b.textContent || '').trim().toLowerCase() === 'withdraw');
+            if (txtBtn) { txtBtn.click(); return true; }
         }
 
         await wait(checkInterval);
         waited += checkInterval;
     }
 
+    return false;
+}
+
+async function waitForDialogToClose() {
+    const maxWait = 5000;
+    const checkInterval = 100;
+    let waited = 0;
+
+    while (waited < maxWait) {
+        const dialogSel = getSelector('dialog_open', 'dialog[open]');
+        const legacySel = getSelector('modal_legacy', '.artdeco-modal');
+        const dialog = document.querySelector(`${dialogSel}, ${legacySel}`);
+        if (!dialog) {
+            // Brief pause for LinkedIn DOM to settle before next withdrawal
+            await wait(100);
+            return true;
+        }
+        await wait(checkInterval);
+        waited += checkInterval;
+    }
     return false;
 }
 
@@ -2015,6 +2326,7 @@ function highlightConnection(element, type) {
         card.style.transition = 'background 0.3s, border 0.3s';
         card.style.backgroundColor = '#fee2e2'; // Light red background
         card.style.border = '2px solid #ef4444'; // Bright red border
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else if (type === 'skip') {
         card.classList.add('cc-highlight-skip');
     }
@@ -2047,11 +2359,12 @@ async function scanConnections() {
         const lastHeight = getScrollHeight();
         const lastCount = findWithdrawButtons().length;
 
-        // Scroll to bottom using helper
-        scrollTo(lastHeight);
+        // Scroll to bottom in viewport-sized steps so LinkedIn's IntersectionObserver
+        // fires at every position — same effect as holding the spacebar.
+        await scrollToBottomIncremental();
 
-        // REACTIVE WAIT: No more "blind" 1500ms or 800ms delays
-        await waitForContentChange(lastHeight, lastCount, 2500);
+        // Brief settle wait after reaching the bottom for any batch-loaded content.
+        await waitForContentChange(lastHeight, lastCount, 1500);
 
         // Check for growth
         const currentHeight = getScrollHeight();
@@ -2097,32 +2410,37 @@ async function scanConnections() {
             partialResults
         );
 
-        if (currentHeight <= previousHeight + 50) { // Tolerance
+        // Track progress strictly by button count growth, not container height
+        if (buttons.length <= lastCount) { 
             noChangeCount++;
 
-            // Stricter check: only stop if we're close to the total count or have tried many times
-            const linkedInTotal = getLinkedInTotalCount();
+            const officialTotal = getLinkedInTotalCount();
             const loadedCount = buttons.length;
+            const targetTotal = state.settings.targetCount || 999999;
+            const absoluteTotal = officialTotal ? Math.min(officialTotal, targetTotal) : targetTotal;
 
-            let fuzzyStop = false;
-            if (linkedInTotal) {
-                if (loadedCount >= linkedInTotal) fuzzyStop = true;
-                else if (loadedCount >= (linkedInTotal - 15) && noChangeCount >= 1) fuzzyStop = true;
-                else if (loadedCount >= (linkedInTotal - 40) && noChangeCount >= 2) fuzzyStop = true;
-            }
-
-            if (fuzzyStop) {
-                Logger.log('ClearConnect: Reached total count (fuzzy), stopping.');
+            // 1. Did we reach the target?
+            if (loadedCount >= absoluteTotal) {
+                Logger.log('ClearConnect: Reached target count, stopping.');
                 break;
             }
 
-            // NEW: Early exit if we are at the bottom and nothing changed after 1 attempt
-            if (noChangeCount >= 1 && isAtScrollBottom()) {
-                Logger.log('ClearConnect: Reached scroll bottom with no growth, stopping.');
-                break;
+            // 2. Fuzzy stop if we know the official total (matching Count Mode logic)
+            if (officialTotal) {
+                if (loadedCount >= (officialTotal - 15) && noChangeCount >= 1) {
+                    Logger.log('ClearConnect: Very near LinkedIn total count, proceeding early');
+                    break;
+                }
+                if (loadedCount >= (officialTotal - 40) && noChangeCount >= 2) {
+                    Logger.log('ClearConnect: Near LinkedIn total count, proceeding');
+                    break;
+                }
             }
 
-            if (noChangeCount >= 2) {
+            // 3. Jiggle logic (every odd noChange)
+            // Skip jiggle if we are very close to the target count (within 20)
+            const isNearTarget = officialTotal ? (loadedCount >= officialTotal - 20) : false;
+            if (noChangeCount % 2 === 1 && !isNearTarget) {
                 Logger.log('ClearConnect: Scanning stuck, checking for Load More button...');
                 const clicked = await clickLoadMoreButton();
                 if (clicked) {
@@ -2130,23 +2448,28 @@ async function scanConnections() {
                     continue;
                 }
 
-                if (noChangeCount >= 4) {
-                    // RE-FIND CONTAINER
-                    const newContainer = findScrollContainer();
-                    if (newContainer && newContainer !== scrollContainer) {
-                        scrollContainer = newContainer;
-                    }
-
-                    if (linkedInTotal && loadedCount < (linkedInTotal - 100)) {
-                        // We are stuck but far from total. Try a "jiggle" scroll?
-                        window.scrollBy(0, -500);
-                        await wait(800);
-                        scrollTo(getScrollHeight());
-                    } else {
-                        Logger.log('ClearConnect: Stuck with no growth, stopping.');
-                        break;
-                    }
+                // RE-FIND CONTAINER
+                const newContainer = findScrollContainer();
+                if (newContainer && newContainer !== scrollContainer) {
+                    scrollContainer = newContainer;
                 }
+
+                Logger.log(`ClearConnect: Jiggling scroll... (${noChangeCount}/15)`);
+                const jiggleAmount = noChangeCount >= 5 ? -1200 : (noChangeCount >= 3 ? -800 : -400);
+
+                if (scrollContainer && scrollContainer !== document.body) {
+                    scrollContainer.scrollBy({ top: jiggleAmount, behavior: 'smooth' });
+                } else {
+                    window.scrollBy({ top: jiggleAmount, behavior: 'smooth' });
+                }
+                await wait(600);
+                await scrollToBottomIncremental();
+            }
+
+            // 4. Ultimate give up
+            if (noChangeCount >= 15) {
+                Logger.log('ClearConnect: Reached max retries on stuck scan.');
+                break;
             }
         } else {
             noChangeCount = 0;
@@ -2370,7 +2693,7 @@ async function withdrawSelected(selectedHashes) {
 
             if (state.settings.debugMode) {
                 // Debug mode: highlight then mark as processed, don't click or hide
-                const card = btn.closest('[role="listitem"]');
+                const card = findCard(btn);
                 if (card) {
                     card.style.transition = 'background 0.3s, border 0.3s';
                     card.style.backgroundColor = '#fff3cd'; // Yellow: processing

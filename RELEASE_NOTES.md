@@ -1,5 +1,61 @@
 # ClearConnect Release Notes
 
+## Version 2.6.1 - Security & Consolidation 🔒
+
+A security-focused release. No feature removals — everything from 2.5.2 is still here.
+
+### 🔐 Security
+- **Removed a hardcoded webhook URL** from the extension source. Diagnostic reports now go to a Cloudflare Worker that emails the team; the extension holds no credential of any kind.
+- **Fixed a cross-site scripting hole** in the side panel. Topics extracted from invitation messages are attacker-influenced text and are now escaped before rendering.
+- **Closed an open relay** in the service worker, which previously fetched whatever URL a message handed it.
+- **Added a content security policy** to extension pages.
+- Diagnostic reports now send the page path rather than the full URL, since query strings can carry identifiers.
+
+### 🔁 Cloud selector sync
+- Sync now reads the Worker's `/selectors` route and **validates the response** before storing it, so a health payload or error page can no longer masquerade as a selector schema.
+
+### 🧹 Housekeeping
+- Icons regenerated from `icons/logo.svg` — real PNGs at 16/48/128 instead of 1024×1024 JPEGs, cutting the package from 1.1 MB to ~85 KB.
+- `popup.css` renamed to `main.css`; it always styled the side panel too.
+- Agent configuration consolidated into one `AGENTS.md` plus `.agents/`.
+- CI now blocks a release outright if a webhook URL appears in the extension source.
+
+---
+
+## Version 2.5.2 - The Speed & Sync Update ⚡️
+
+ClearConnect just got faster, smarter, and infinitely more reliable! We’ve rebuilt the core engine that powers our withdrawal logic to ensure you never miss a beat when LinkedIn changes its layout. 
+
+### 🚀 Speed & Usability Improvements
+- **Lightning Fast**: Under-the-hood performance tweaks ensure the extension runs smoother and uses fewer resources while scanning your connections.
+- **Intuitive Settings**: We've refined the Advanced Settings menu so keeping your extension updated with the latest layout fixes is just a single click away. 
+
+### 📡 Bulletproof Cloud Sync
+LinkedIn changes its design often, which occasionally used to break the extension. Not anymore!
+- **Auto-Healing Connections**: If LinkedIn updates its layout, ClearConnect can now instantly fetch the latest working configuration directly from our cloud server. No more waiting days for an app store update!
+- **Smarter Relearning**: If you ever need to use the "Repair Layout" tool yourself, it now learns your screen flawlessly without saving any of your personal data, and seamlessly applies it across the entire extension.
+
+### 📥 How to Install
+1. Download the latest `clearconnect` folder.
+2. Open Google Chrome and go to `chrome://extensions/` in your URL bar.
+3. Turn on **Developer mode** using the toggle in the top right corner.
+4. Click **Load unpacked** in the top left and select your downloaded ClearConnect folder.
+5. You're ready to go!
+
+---
+## Version 2.5.1 - Stability & CI Update 🛠️
+
+This patch resolves critical issues with the dynamic selector management system and improves our continuous integration pipeline.
+
+### 🐛 1. Dynamic Selector Fixes
+- **Message Scanner Resilience**: Fixed a bug where the "Message Mode" scanner ignored user-trained custom selectors for message extraction. The scanner will now reliably detect and group messages even when LinkedIn alters their connection card UI.
+- **Improved Fail-safes**: Corrected the fallback logic so that if custom selectors are present, they are strictly prioritized over legacy `data-testid` attributes.
+
+### ⚙️ 2. Deployment Pipeline Enhancements
+- **Separated Workflows**: GitHub Actions has been updated to independently package the Chrome Extension and deploy the backend Cloudflare Worker, preventing monolithic build failures.
+
+---
+
 ## Version 2.5.0 - The Evolution Update 🚀
 
 This version marks a significant milestone in ClearConnect's journey, transforming from a simple MVP into a robust, high-performance tool for LinkedIn connection management.

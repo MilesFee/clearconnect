@@ -55,16 +55,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return; // Fire-and-forget, no response needed
     }
 
-    // On completion, revert panel behavior
     if (message.action === 'COMPLETE') {
         chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => { });
+    }
+
+    if (message.action === 'SYNC_SELECTORS') {
+        syncCloudSelectors().then((result) => sendResponse(result));
+        return true;
+    }
+});
+
+// Enable side panel only on LinkedIn sent invitations page
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'complete' && tab.url) {
+        const isLinkedIn = tab.url.includes('linkedin.com/mynetwork/invitation-manager/sent');
+        await chrome.sidePanel.setOptions({
+            tabId,
+            path: 'sidepanel.html',
+            enabled: isLinkedIn
+        });
     }
 });
 
 // ============ DIAGNOSTIC REPORTING ============
 // Endpoint for the ClearConnect Worker's /report route (see worker/README.md).
 // Leave empty to disable reporting entirely -- nothing is sent when unset.
-// Whoever deploys the Worker should point this at their own deployment.
 const REPORT_ENDPOINT = 'https://clearconnect-selectors.milesfee.workers.dev/report';
 
 // Never email more than one report of the same type per interval. Without this a
@@ -101,14 +116,59 @@ function postDiagnosticReport(event) {
     }).catch(() => { }); // Delivery failures must never surface to the user.
 }
 
-// Enable side panel only on LinkedIn sent invitations page
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (changeInfo.status === 'complete' && tab.url) {
-        const isLinkedIn = tab.url.includes('linkedin.com/mynetwork/invitation-manager/sent');
-        await chrome.sidePanel.setOptions({
-            tabId,
-            path: 'sidepanel.html',
-            enabled: isLinkedIn
-        });
+// ============ CLOUD SELECTOR SYNC ============
+// The Worker's schema route. Note this is /selectors, not / -- the root is a
+// health probe that returns a small JSON object, and storing that as a schema
+// would look like a successful sync while silently discarding the real one.
+// Whoever deploys the Worker should point this at their own deployment.
+const SELECTORS_ENDPOINT = 'https://clearconnect-selectors.milesfee.workers.dev/selectors';
+
+/**
+ * A schema is an object of selector entries: each value is either a CSS string
+ * or a learned-selector descriptor object. Anything else -- a health payload, an
+ * error body, a captive-portal interstitial -- is rejected rather than stored.
+ */
+function isValidSelectorSchema(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    const keys = Object.keys(data);
+    if (keys.length === 0 || keys.length > 64) return false;
+    return keys.every(k => {
+        if (!/^[\w.-]{1,64}$/.test(k)) return false;
+        const v = data[k];
+        if (typeof v === 'string') return v.length > 0 && v.length <= 512;
+        return !!v && typeof v === 'object' && !Array.isArray(v);
+    });
+}
+
+async function syncCloudSelectors() {
+    try {
+        const response = await fetch(SELECTORS_ENDPOINT, { cache: 'no-store' });
+        if (!response.ok) {
+            return { success: false, error: `HTTP ${response.status}` };
+        }
+        const data = await response.json();
+        if (!isValidSelectorSchema(data)) {
+            // Do not overwrite a good stored schema with a bad response.
+            Logger.warn('ClearConnect: Ignoring malformed selector schema');
+            return { success: false, error: 'Malformed schema' };
+        }
+        await chrome.storage.local.set({ cloud_selectors: data, last_sync_time: Date.now() });
+        Logger.log('ClearConnect: Synced cloud selectors successfully.');
+        return { success: true };
+    } catch (e) {
+        Logger.error('ClearConnect: Failed to sync cloud selectors', e);
+        return { success: false, error: e.message };
+    }
+}
+
+// Sync on startup / install
+chrome.runtime.onStartup.addListener(syncCloudSelectors);
+chrome.runtime.onInstalled.addListener(syncCloudSelectors);
+
+// Set alarm to sync periodically (every 12 hours)
+chrome.alarms.create('sync_selectors', { periodInMinutes: 720 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'sync_selectors') {
+        syncCloudSelectors();
     }
 });

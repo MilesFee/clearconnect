@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "ClearConnect",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "Safely withdraw old LinkedIn connection requests.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "sidePanel"
+    "sidePanel",
+    "alarms"
   ],
   "host_permissions": [
     "https://www.linkedin.com/*"
